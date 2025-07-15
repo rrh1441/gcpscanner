@@ -1,8 +1,16 @@
 import { Pool } from 'pg';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { config } from 'dotenv';
 
-config(); // Load from environment variables
+// In production, environment variables are already set by Fly.io
+// Only load dotenv in development
+if (process.env.NODE_ENV !== 'production') {
+    const { config } = require('dotenv');
+    config();
+}
+
+// Debug: Log environment info
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('Environment variables present:', Object.keys(process.env).filter(k => k.includes('DATABASE') || k.includes('SUPABASE')));
 
 const FLY_POSTGRES_CONNECTION_STRING = process.env.DATABASE_URL || process.env.DB_URL;
 const SUPABASE_URL = process.env.SUPABASE_URL; // From Vercel, will be NEXT_PUBLIC_SUPABASE_URL
@@ -10,13 +18,23 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; // You'
 
 if (!FLY_POSTGRES_CONNECTION_STRING || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     console.error('SyncWorker: Missing critical environment variables (DATABASE_URL, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY). Exiting.');
+    console.error('DATABASE_URL present:', !!process.env.DATABASE_URL);
+    console.error('SUPABASE_URL present:', !!process.env.SUPABASE_URL);
+    console.error('SUPABASE_SERVICE_ROLE_KEY present:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
     process.exit(1);
 }
 
 // Environment loaded - minimal logging
+console.log('Initializing Supabase client with service role key...');
+console.log('Service role key starts with:', SUPABASE_SERVICE_ROLE_KEY.substring(0, 50) + '...');
 
 const flyPostgresPool = new Pool({ connectionString: FLY_POSTGRES_CONNECTION_STRING });
-const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: {
+        autoRefreshToken: false,
+        persistSession: false
+    }
+});
 
 const SYNC_INTERVAL_MS = 60 * 1000; // Sync every 1 minute
 let lastSuccessfulScanSync = new Date(0);
@@ -181,6 +199,7 @@ async function syncFindingsTable() {
             query = `
                 SELECT 
                     id as original_finding_id,
+                    artifact_id,
                     scan_id,
                     finding_type,
                     description,
@@ -196,6 +215,7 @@ async function syncFindingsTable() {
             query = `
                 SELECT 
                     f.id as original_finding_id,
+                    f.artifact_id,
                     a.meta->>'scan_id' as scan_id,
                     f.finding_type,
                     f.description,
@@ -216,6 +236,7 @@ async function syncFindingsTable() {
                 .filter(f => f.scan_id) // Only sync findings with scan_id
                 .map(f => ({
                     id: f.original_finding_id, 
+                    artifact_id: f.artifact_id,
                     scan_id: f.scan_id,
                     finding_type: f.finding_type,
                     description: f.description,
@@ -275,9 +296,9 @@ async function syncArtifactsTable() {
                 id,
                 type,
                 meta,
-                url,
+                src_url,
                 severity,
-                confidence,
+                val_text,
                 created_at
             FROM artifacts
             WHERE created_at > $1
@@ -292,9 +313,9 @@ async function syncArtifactsTable() {
                 id: artifact.id,
                 type: artifact.type,
                 meta: artifact.meta,
-                url: artifact.url,
+                src_url: artifact.src_url,
                 severity: artifact.severity,
-                confidence: artifact.confidence,
+                val_text: artifact.val_text,
                 created_at: artifact.created_at,
             }));
             
