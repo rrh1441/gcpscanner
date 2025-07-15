@@ -25,8 +25,18 @@ type SecretHit = { pattern: SecretPattern; match: string };
 // 1. Curated high-precision built-in patterns
 // ------------------------------------------------------------------
 const BUILTIN_PATTERNS: SecretPattern[] = [
+  /* Database Exposure - CRITICAL */
+  { name: 'Database Connection String', regex: /(postgres|postgresql|mysql|mongodb|redis):\/\/[^:]+:([^@]+)@[^/\s'"]+/gi, severity: 'CRITICAL' },
+  { name: 'Supabase Database URL', regex: /(postgresql:\/\/postgres:[^@]+@[^/]*supabase[^/\s'"]+)/gi, severity: 'CRITICAL' },
+  { name: 'Neon Database URL', regex: /(postgresql:\/\/[^:]+:[^@]+@[^/]*neon\.tech[^/\s'"]+)/gi, severity: 'CRITICAL' },
+  { name: 'PlanetScale Database URL', regex: /(mysql:\/\/[^:]+:[^@]+@[^/]*\.psdb\.cloud[^/\s'"]+)/gi, severity: 'CRITICAL' },
+  { name: 'Database Password', regex: /(db_password|database_password|DB_PASSWORD|DATABASE_PASSWORD|password)["']?\s*[:=]\s*["']?([^"'\s]{8,})["']?/gi, severity: 'CRITICAL' },
+  { name: 'Postgres Host', regex: /(postgres_host|POSTGRES_HOST|pg_host|PG_HOST|host)["']?\s*[:=]\s*["']?([^"'\s]+\.(supabase\.co|neon\.tech|amazonaws\.com|pooler\.supabase\.com))["']?/gi, severity: 'HIGH' },
+  { name: 'Database User', regex: /(postgres_user|POSTGRES_USER|db_user|DB_USER|user)["']?\s*[:=]\s*["']?(postgres|root|admin|db_admin)["']?/gi, severity: 'HIGH' },
+  
   /* Core cloud / generic */
   { name: 'Supabase Service Key', regex: /(eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}).*?service_role/gi, severity: 'CRITICAL' },
+  { name: 'Supabase Anon Key', regex: /(supabase_anon_key|SUPABASE_ANON_KEY)["']?\s*[:=]\s*["']?(eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,})["']?/gi, severity: 'HIGH' },
   { name: 'AWS Access Key ID',    regex: /(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}/g,            severity: 'CRITICAL' },
   { name: 'AWS Secret Access Key',regex: /aws_secret_access_key["']?\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/g,           severity: 'CRITICAL' },
   { name: 'Google API Key',       regex: /AIza[0-9A-Za-z-_]{35}/g,                                                         severity: 'HIGH'     },
@@ -179,12 +189,22 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
           meta: { scan_id: scanId, detector:'ClientSecretScanner', pattern:pattern.name, preview:match.slice(0,50) }
         });
 
-        await insertFinding(
-          artifactId,
-          'CLIENT_SIDE_SECRET_EXPOSURE',
-          'Revoke / rotate this credential immediately; it is publicly downloadable.',
-          `Exposed ${pattern.name} in client asset. Sample: ${match.slice(0,80)}…`
-        );
+        // Special handling for database exposure
+        if (pattern.name.includes('Database') || pattern.name.includes('Postgres') || pattern.name.includes('Supabase') || pattern.name.includes('Neon')) {
+          await insertFinding(
+            artifactId,
+            'DATABASE_EXPOSURE',
+            'CRITICAL: Database access exposed! Rotate credentials IMMEDIATELY and restrict database access. This allows full database access including reading, modifying, and deleting all data.',
+            `Exposed ${pattern.name} in client-side code. This grants FULL DATABASE ACCESS. Sample: ${match.slice(0,80)}…`
+          );
+        } else {
+          await insertFinding(
+            artifactId,
+            'CLIENT_SIDE_SECRET_EXPOSURE',
+            'Revoke / rotate this credential immediately; it is publicly downloadable.',
+            `Exposed ${pattern.name} in client asset. Sample: ${match.slice(0,80)}…`
+          );
+        }
       }
     }
   } catch (err) {

@@ -586,6 +586,8 @@ async function enrichVisibility(endpoints: DiscoveredEndpoint[]): Promise<void> 
 // Target high-value paths that might contain secrets
 const probeHighValuePaths = async (baseUrl: string): Promise<void> => {
   const highValuePaths = [
+    '/',  // Index page
+    '/index.html',  // Explicit index
     '/.env',
     '/config.json',
     '/app.config.json',

@@ -25,6 +25,7 @@ import { runCensysScan } from './modules/censysPlatformScan.js';
 // import { runOpenVASScan } from './modules/openvasScan.js';  // Available but disabled until needed
 import { runZAPScan } from './modules/zapScan.js';
 import { runAssetCorrelator } from './modules/assetCorrelator.js';
+import { runConfigExposureScanner } from './modules/configExposureScanner.js';
 import { enrichFindingsWithRemediation } from './util/remediationPlanner.js';
 import { pool } from './core/artifactStore.js';
 
@@ -52,6 +53,7 @@ type ScanTier = 'TIER_1' | 'TIER_2';
 // Tier 1: Safe, automated modules - no active probing beyond standard discovery
 const TIER_1_MODULES = [
   // 'spiderfoot',       // REMOVED: 90% redundant with dedicated modules, saves 2m 47s
+  'config_exposure',     // NEW: Direct config file probing
   'dns_twist', 
   'document_exposure',
   'shodan',
@@ -64,7 +66,7 @@ const TIER_1_MODULES = [
   'nuclei',              // Baseline vulnerability scan with 8s timeout
   'tls_scan',
   'spf_dmarc',
-  'trufflehog',
+  // 'trufflehog',  // Not applicable for external scanning - requires access to git repos
   'client_secret_scanner'
 ];
 
@@ -289,6 +291,11 @@ async function processScan(job: ScanJob): Promise<void> {
       log(`[${scanId}] STARTING accessibility compliance scan for ${domain} (immediate parallel)`);
       immediateParallelPromises.accessibility_scan = runAccessibilityScan({ domain, scanId });
     }
+    
+    if (activeModules.includes('config_exposure')) {
+      log(`[${scanId}] STARTING config exposure scanner for ${domain} (immediate parallel)`);
+      immediateParallelPromises.config_exposure = runConfigExposureScanner({ domain, scanId });
+    }
 
     // Wait for endpoint_discovery to complete before starting dependent modules
     let endpointResults = 0;
@@ -317,6 +324,11 @@ async function processScan(job: ScanJob): Promise<void> {
     if (activeModules.includes('abuse_intel_scan')) {
       log(`[${scanId}] STARTING AbuseIPDB intelligence scan for IPs (parallel after endpoint discovery)`);
       dependentParallelPromises.abuse_intel_scan = runAbuseIntelScan({ scanId });
+    }
+    
+    if (activeModules.includes('client_secret_scanner')) {
+      log(`[${scanId}] STARTING client-side secret scanner (parallel after endpoint discovery)`);
+      dependentParallelPromises.client_secret_scanner = runClientSecretScanner({ scanId });
     }
 
     // Wait for all immediate parallel modules to complete
@@ -423,16 +435,22 @@ async function processScan(job: ScanJob): Promise<void> {
             log(`[${scanId}] COMPLETED email security scan: ${moduleFindings} email issues found`);
             break;
             
-          case 'trufflehog':
-            log(`[${scanId}] STARTING TruffleHog secret detection for ${domain}`);
-            moduleFindings = await runTrufflehog({ domain, scanId });
-            log(`[${scanId}] COMPLETED secret detection: ${moduleFindings} secrets found`);
-            break;
+          // case 'trufflehog':
+          //   log(`[${scanId}] STARTING TruffleHog secret detection for ${domain}`);
+          //   moduleFindings = await runTrufflehog({ domain, scanId });
+          //   log(`[${scanId}] COMPLETED secret detection: ${moduleFindings} secrets found`);
+          //   break;
             
           case 'client_secret_scanner':
             log(`[${scanId}] STARTING client-side secret scanner for ${domain}`);
             moduleFindings = await runClientSecretScanner({ scanId });
             log(`[${scanId}] COMPLETED client secret scan: ${moduleFindings} secrets found`);
+            break;
+            
+          case 'config_exposure':
+            log(`[${scanId}] STARTING config exposure scanner for ${domain}`);
+            moduleFindings = await runConfigExposureScanner({ domain, scanId });
+            log(`[${scanId}] COMPLETED config exposure scan: ${moduleFindings} exposed secrets found`);
             break;
             
           default:
