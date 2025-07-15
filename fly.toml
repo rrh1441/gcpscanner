@@ -53,12 +53,12 @@ primary_region = "sea"
   min_machines_running = 0    # ✅ Scale to ZERO - use Fly's native auto-scaling
   max_machines_running = 10   # ✅ Support up to 10 parallel scans
 
-# Sync worker: Scale to zero when idle
+# Sync worker: Keep running to ensure findings sync to Supabase
 [[services]]
   processes = ['sync_worker']
-  auto_stop_machines = true   # ✅ Scale to ZERO when idle (saves money)
-  auto_start_machines = true  # Auto-start when needed
-  min_machines_running = 0    # ✅ Scale to ZERO when no sync needed
+  auto_stop_machines = false  # Keep running to ensure sync happens
+  auto_start_machines = true  # Auto-start if it stops
+  min_machines_running = 1    # Always have 1 instance running
 
 # ZAP worker: DISABLED for Tier 1 scans - only runs on explicit Tier 2 authorization
 # [[services]]
