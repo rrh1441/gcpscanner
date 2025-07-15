@@ -88,7 +88,7 @@ CREATE TABLE scans (
 CREATE TABLE findings (
   id INTEGER PRIMARY KEY,
   scan_id VARCHAR(255),
-  type VARCHAR(50),
+  finding_type VARCHAR(50),
   description TEXT,
   recommendation TEXT,
   severity VARCHAR(20),

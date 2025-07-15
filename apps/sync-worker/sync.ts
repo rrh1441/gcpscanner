@@ -216,7 +216,7 @@ async function syncFindingsTable() {
                 .map(f => ({
                     id: f.original_finding_id, 
                     scan_id: f.scan_id,
-                    type: f.finding_type,
+                    finding_type: f.finding_type,
                     description: f.description,
                     recommendation: f.recommendation,
                     severity: f.severity,
@@ -246,7 +246,7 @@ async function syncFindingsTable() {
                 // Only log when there are actually NEW findings
                 if (newFindings.length > 0) {
                     const findingsByType = newFindings.reduce((acc, f) => {
-                        acc[f.type] = (acc[f.type] || 0) + 1;
+                        acc[f.finding_type] = (acc[f.finding_type] || 0) + 1;
                         return acc;
                     }, {} as Record<string, number>);
                     
