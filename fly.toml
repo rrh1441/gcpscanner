@@ -1,0 +1,109 @@
+# fly.toml — DealBrief-Scanner (updated)
+
+app            = "dealbrief-scanner"
+primary_region = "sea"
+
+[build]
+  dockerfile = "Dockerfile"
+  platform = "linux/amd64"
+
+[env]
+  # Nuclei - baseline only for Tier-1
+  NUCLEI_RUN_HEADLESS = "false"            # Gate deep scan to Tier-2
+  NUCLEI_BASELINE_TIMEOUT_MS = "8000"      # Drop to 8s; 90th percentile templates finish < 3s
+  NUCLEI_CONCURRENCY = "48"                # 2 perf cores can happily spawn 48 goroutines
+  NUCLEI_RETRIES = "0"                     # Rely on concurrency instead of retries
+  
+  # Accessibility
+  AXE_MAX_PAGES = "3"                      # Scan only 3 key pages in Tier-1
+  AXE_SKIP_IF_UNCHANGED = "true"
+  
+  # Document scanning
+  SERPER_MAX_DOWNLOAD_BYTES = "0"          # Don't fetch binaries in Tier-1
+  
+  NODE_TLS_REJECT_UNAUTHORIZED = "0"
+
+# ────────────── Processes ──────────────
+[processes]
+  api            = "npx tsx apps/api-main/server.ts"
+  scanner_worker = "npx tsx apps/workers/worker.ts"
+  sync_worker    = "npm run start --prefix apps/sync-worker"
+  # zap_worker     = "npx tsx apps/workers/zapWorker.ts"  # DISABLED for Tier 1
+
+  # Always-on template updater - pulls once every 24 h
+  updater        = "sh -c 'while true; do run_nuclei -update-templates; sleep 86400; done'"
+  
+  # NVD mirror updater - runs once daily to update CVE database
+  nvd_updater    = "sh -c 'while true; do npx tsx apps/workers/nvd-mirror-worker.ts; sleep 86400; done'"
+
+# ────────────── HTTP service (API) ──────────────
+[http_service]
+  internal_port        = 3000
+  force_https          = true
+  auto_stop_machines   = "off"   # keep API live
+  auto_start_machines  = true
+  min_machines_running = 1
+  processes            = ["api"]
+
+# Scanner worker: Scale to zero when idle, high RAM when running
+[[services]]
+  processes = ['scanner_worker']
+  auto_stop_machines = true   # ✅ Scale to ZERO when idle (saves money)
+  auto_start_machines = true  # Auto-start when scan triggered
+  min_machines_running = 0    # ✅ Scale to ZERO - use Fly's native auto-scaling
+  max_machines_running = 10   # ✅ Support up to 10 parallel scans
+
+# Sync worker: Scale to zero when idle
+[[services]]
+  processes = ['sync_worker']
+  auto_stop_machines = true   # ✅ Scale to ZERO when idle (saves money)
+  auto_start_machines = true  # Auto-start when needed
+  min_machines_running = 0    # ✅ Scale to ZERO when no sync needed
+
+# ZAP worker: DISABLED for Tier 1 scans - only runs on explicit Tier 2 authorization
+# [[services]]
+#   processes = ['zap_worker']
+#   auto_stop_machines = true   # ✅ Scale to ZERO when idle (pay-per-second)
+#   auto_start_machines = true  # Auto-start when ZAP scan triggered
+#   min_machines_running = 0    # ✅ No idle cost
+#   max_machines_running = 5    # ✅ Support up to 5 parallel ZAP scans
+
+# ────────────── VM sizes ──────────────
+# API — small & always on
+[[vm]]
+  memory    = "256mb"
+  cpu_kind  = "shared"
+  cpus      = 1
+  processes = ["api"]
+
+[[vm]] # VM for the scanner worker - High RAM for scan bursts + dual core for parallelization
+  memory = '4gb'    # Keep high RAM for memory-intensive scans
+  cpu_kind = 'performance'
+  cpus = 2          # Add second core for parallel module execution
+  processes = ['scanner_worker']
+
+[[vm]] # VM for the sync worker - Minimal RAM for DB operations
+  memory = '256mb'  # ✅ Reduced from 512MB - just DB sync
+  cpu_kind = 'shared'
+  cpus = 1
+  processes = ['sync_worker']
+
+[[vm]] # VM for ZAP workers - High performance for web app scanning
+  memory = '4gb'    # ZAP needs sufficient memory for Java + web crawling
+  cpu_kind = 'performance'
+  cpus = 2          # Dual core for parallel ZAP scanning
+  processes = ['zap_worker']
+
+# Template updater — tiny, no Chrome
+[[vm]]
+  memory    = "512mb"     # enough for `git` + unzip
+  cpu_kind  = "shared"
+  cpus      = 1
+  processes = ["updater"]
+
+# NVD mirror updater — minimal resources for daily CVE sync
+[[vm]]
+  memory    = "512mb"     # enough for SQLite + HTTP requests
+  cpu_kind  = "shared"
+  cpus      = 1
+  processes = ["nvd_updater"]

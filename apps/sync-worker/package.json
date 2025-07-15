@@ -1,0 +1,24 @@
+{
+  "name": "sync-worker",
+  "version": "1.0.0",
+  "description": "Sync worker to sync data from Fly.io PostgreSQL to Supabase",
+  "main": "sync.ts",
+  "scripts": {
+    "start": "node dist/sync.js",
+    "dev": "ts-node-esm sync.ts",
+    "build": "tsc",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "pg": "^8.11.3",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.10.9",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.3.0"
+  },
+  "type": "module"
+} 
