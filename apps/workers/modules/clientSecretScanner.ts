@@ -53,7 +53,7 @@ const BUILTIN_PATTERNS: SecretPattern[] = [
   { name: 'Algolia Admin Key',    regex: /[a-f0-9]{32}(?:-dsn)?\.algolia\.net/gi,                                         severity: 'HIGH'     },
   { name: 'Auth0 Client Secret',  regex: /AUTH0_CLIENT_SECRET["']?\s*[:=]\s*["']?([A-Za-z0-9_-]{30,})["']?/gi,             severity: 'CRITICAL' },
   { name: 'Bugsnag API Key',      regex: /bugsnag\.apiKey\s*=\s*['"]([A-Za-z0-9]{32})['"]/gi,                             severity: 'HIGH'     },
-  { name: 'New Relic License',    regex: /NRAA-[0-9a-f]{27}/i,                                                             severity: 'HIGH'     },
+  { name: 'New Relic License',    regex: /NRAA-[0-9a-f]{27}/gi,                                                            severity: 'HIGH'     },
   { name: 'PagerDuty API Key',    regex: /pdt[A-Z0-9]{30,32}/g,                                                            severity: 'HIGH'     },
   { name: 'Segment Write Key',    regex: /SEGMENT_WRITE_KEY["']?\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi,                  severity: 'HIGH'     }
 ];
@@ -105,11 +105,23 @@ function loadPluginPatterns(): SecretPattern[] {
   }
 }
 
+// Helper to ensure all patterns have global flag for matchAll compatibility
+function ensureGlobalFlag(pattern: SecretPattern): SecretPattern {
+  if (pattern.regex.global) {
+    return pattern;
+  }
+  return {
+    ...pattern,
+    regex: new RegExp(pattern.regex.source, pattern.regex.flags + 'g')
+  };
+}
+
 // Lazy initialization function
 let secretPatterns: SecretPattern[] | null = null;
 function getSecretPatterns(): SecretPattern[] {
   if (secretPatterns === null) {
-    secretPatterns = [...BUILTIN_PATTERNS, ...loadPluginPatterns()];
+    // Ensure all patterns have global flag to prevent matchAll errors
+    secretPatterns = [...BUILTIN_PATTERNS, ...loadPluginPatterns()].map(ensureGlobalFlag);
     log(`[clientSecretScanner] initialized ${secretPatterns.length} total patterns (${BUILTIN_PATTERNS.length} builtin + ${cachedPluginPatterns?.length || 0} plugin)`);
   }
   return secretPatterns;
