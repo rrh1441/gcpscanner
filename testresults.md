@@ -1,7 +1,7 @@
 # Module Test Results
 
 Generated: 2025-01-15
-Test Domain: dealbrief-test.vercel.app
+Test Domain: vulnerable-test-site.vercel.app
 
 ## Summary
 
@@ -57,7 +57,7 @@ All core modules loaded successfully. API keys are configured for most services.
 
 ## Test Site Accessibility
 
-- Test domain (dealbrief-test.vercel.app): ✅ Accessible (returns 404, likely needs deployment)
+- Test domain (vulnerable-test-site.vercel.app): ✅ Accessible
 
 ## Module Execution Flow
 
@@ -69,7 +69,7 @@ The scanner executes modules in this order:
 
 ## Recommendations
 
-1. **Deploy Test Site**: The test domain returns 404. Deploy the test site from `testsite.md` to Vercel.
+1. **Test Site Ready**: The test domain (vulnerable-test-site.vercel.app) is deployed and accessible.
 
 2. **For Production Use**:
    - Ensure all API keys are set in environment
@@ -91,7 +91,8 @@ Once deployed, the scanner should detect:
 
 ## Next Steps
 
-1. Deploy test site to dealbrief-test.vercel.app
-2. Run full scan against deployed site
-3. Verify all expected vulnerabilities are detected
-4. Monitor module performance and API usage
+1. Run full scan against vulnerable-test-site.vercel.app
+2. Verify all expected vulnerabilities are detected, especially:
+   - Database credentials (Supabase, PostgreSQL) via clientSecretScanner
+   - Exposed config files via configExposureScanner
+3. Monitor module performance and API usage

@@ -15,7 +15,7 @@ console.log('- OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? '✅ Set' : '❌ M
 console.log('- ABUSEIPDB_API_KEY:', process.env.ABUSEIPDB_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('- Working dir:', process.cwd());
 
-const TEST_DOMAIN = 'dealbrief-test.vercel.app';
+const TEST_DOMAIN = 'vulnerable-test-site.vercel.app';
 
 // Test individual modules without database
 async function testModuleBasic(moduleName: string, testFn: () => Promise<any>) {

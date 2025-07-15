@@ -13,7 +13,7 @@ console.log('- SHODAN_API_KEY:', process.env.SHODAN_API_KEY ? '✅ Set' : '❌ M
 console.log('- OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? '✅ Set' : '❌ Missing');
 console.log('- ABUSEIPDB_API_KEY:', process.env.ABUSEIPDB_API_KEY ? '✅ Set' : '❌ Missing');
 
-const TEST_DOMAIN = 'dealbrief-test.vercel.app';
+const TEST_DOMAIN = 'vulnerable-test-site.vercel.app';
 const TEST_COMPANY = 'Test Company';
 const SCAN_ID = `test-${Date.now()}`;
 

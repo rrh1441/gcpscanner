@@ -28,7 +28,7 @@ import { runAssetCorrelator } from './modules/assetCorrelator.js';
 config();
 
 // Test configuration
-const TEST_DOMAIN = process.env.TEST_DOMAIN || 'dealbrief-test.vercel.app';
+const TEST_DOMAIN = process.env.TEST_DOMAIN || 'vulnerable-test-site.vercel.app';
 const TEST_COMPANY = 'Test Company';
 const SCAN_ID = `test-${Date.now()}`;
 
