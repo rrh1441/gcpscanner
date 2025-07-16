@@ -1,10 +1,10 @@
 import { Pool } from 'pg';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { config } from 'dotenv';
 
 // In production, environment variables are already set by Fly.io
 // Only load dotenv in development
 if (process.env.NODE_ENV !== 'production') {
-    const { config } = require('dotenv');
     config();
 }
 
