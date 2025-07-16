@@ -91,8 +91,7 @@ export async function insertFinding(
       eal_low: additionalFields?.eal_low || null,
       eal_ml: additionalFields?.eal_ml || null,
       eal_high: additionalFields?.eal_high || null,
-      eal_daily: additionalFields?.eal_daily || null,
-      remediation: additionalFields?.remediation || null
+      eal_daily: additionalFields?.eal_daily || null
     };
 
     const { data, error } = await supabase
@@ -106,8 +105,8 @@ export async function insertFinding(
       throw error;
     }
     
-    // Only log HIGH/CRITICAL findings to reduce log spam
-    if (findingType.includes('CRITICAL') || findingType.includes('MALICIOUS') || findingType.includes('EXPOSED')) {
+    // Only log CRITICAL/MALICIOUS findings to reduce log spam
+    if (findingType.includes('CRITICAL') || findingType.includes('MALICIOUS')) {
       console.log(`[artifactStore] Inserted finding ${findingType} for artifact ${artifactId}${reproCommand ? ' with repro command' : ''}`);
     }
     return data.id;

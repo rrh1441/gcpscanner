@@ -102,8 +102,7 @@ export async function resolveWhoisBatch(domains: string[]): Promise<{ records: W
       }
     };
     
-    log(`[whoisWrapper] WHOIS resolution: ${rdapCalls} RDAP (free) + ${whoxyCalls} Whoxy (~$${estimatedCost.toFixed(3)})`);
-    log(`[whoisWrapper] Saved $${savedVsWhoisxml.toFixed(3)} vs WhoisXML`);
+    // Cost tracking removed from logs - data still available in returned stats
     
     return result;
     

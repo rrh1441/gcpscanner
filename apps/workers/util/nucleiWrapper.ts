@@ -530,9 +530,7 @@ export async function runNuclei(options: NucleiOptions): Promise<NucleiExecution
   // Create artifacts if scanId is provided
   if (options.scanId && results.length > 0) {
     artifactsCreated = await createNucleiArtifacts(results, options.scanId);
-    log(`Nuclei execution completed: ${results.length} results, ${artifactsCreated} artifacts created, exit code ${exitCode}`);
-  } else {
-    log(`Nuclei execution completed: ${results.length} results, exit code ${exitCode}`);
+    // Nuclei execution completed - verbose logging removed
   }
   
   return {
@@ -728,7 +726,7 @@ export async function runTwoPassScan(
     const totalFindings = baselineScan.results.length;
     const totalPersistedCount = baselineScan.persistedCount || 0;
     
-    log(`Two-pass scan completed (headless skipped): ${totalPersistedCount} findings persisted as artifacts (baseline: ${baselineScan.persistedCount || 0}, headless: skipped)`);
+    // Two-pass scan completed (headless skipped) - verbose logging removed
     
     return {
       baselineResults: baselineScan.results,

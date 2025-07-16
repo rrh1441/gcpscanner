@@ -119,12 +119,7 @@ class WhoisResolver:
             tasks = [self._resolve_single(session, d.lower().strip()) for d in domains]
             results = await asyncio.gather(*tasks)
             
-            # Log cost savings to stderr to avoid JSON parsing issues
-            total_calls = self.rdap_calls + self.whoxy_calls
-            whoxy_cost = self.whoxy_calls * 0.002
-            saved_vs_whoisxml = total_calls * 0.015 - whoxy_cost
-            print(f"WHOIS Resolution: {self.rdap_calls} RDAP (free) + {self.whoxy_calls} Whoxy (~${whoxy_cost:.3f})", file=sys.stderr)
-            print(f"Saved ${saved_vs_whoisxml:.3f} vs WhoisXML", file=sys.stderr)
+            # Cost tracking removed from logs
             
             return results
 

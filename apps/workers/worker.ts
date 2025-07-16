@@ -26,7 +26,6 @@ import { runCensysScan } from './modules/censysPlatformScan.js';
 import { runZAPScan } from './modules/zapScan.js';
 import { runAssetCorrelator } from './modules/assetCorrelator.js';
 import { runConfigExposureScanner } from './modules/configExposureScanner.js';
-import { enrichFindingsWithRemediation } from './util/remediationPlanner.js';
 import { pool } from './core/artifactStore.js';
 
 config();
@@ -128,7 +127,7 @@ async function updateScanMasterStatus(scanId: string, updates: ScanMasterUpdate)
       values
     );
     
-    log(`[updateScanMasterStatus] Updated scan ${scanId} with:`, Object.keys(updates).join(', '));
+    // Scan status updated (verbose logging removed)
     
     if (result.rowCount === 0) {
       log(`[updateScanMasterStatus] WARNING: No rows updated for scan ${scanId}, may not exist in scans_master table`);
@@ -250,37 +249,30 @@ async function processScan(job: ScanJob): Promise<void> {
     
     // Independent modules - start immediately
     if (activeModules.includes('breach_directory_probe')) {
-      log(`[${scanId}] STARTING Breach Directory intelligence probe for ${domain} (immediate parallel)`);
       immediateParallelPromises.breach_directory_probe = runBreachDirectoryProbe({ domain, scanId });
     }
     
     if (activeModules.includes('shodan')) {
-      log(`[${scanId}] STARTING Shodan intelligence scan for ${domain} (immediate parallel)`);
       immediateParallelPromises.shodan = runShodanScan({ domain, scanId, companyName });
     }
     
     if (activeModules.includes('dns_twist')) {
-      log(`[${scanId}] STARTING DNS Twist scan for ${domain} (immediate parallel)`);
       immediateParallelPromises.dns_twist = runDnsTwist({ domain, scanId });
     }
     
     if (activeModules.includes('document_exposure')) {
-      log(`[${scanId}] STARTING document exposure scan for ${companyName} (immediate parallel)`);
       immediateParallelPromises.document_exposure = runDocumentExposure({ companyName, domain, scanId });
     }
     
     if (activeModules.includes('endpoint_discovery')) {
-      log(`[${scanId}] STARTING endpoint discovery for ${domain} (immediate parallel)`);
       immediateParallelPromises.endpoint_discovery = runEndpointDiscovery({ domain, scanId });
     }
     
     if (activeModules.includes('tls_scan')) {
-      log(`[${scanId}] STARTING TLS security scan for ${domain} (immediate parallel)`);
       immediateParallelPromises.tls_scan = runTlsScan({ domain, scanId });
     }
     
     if (activeModules.includes('spf_dmarc')) {
-      log(`[${scanId}] STARTING SPF/DMARC email security scan for ${domain} (immediate parallel)`);
       immediateParallelPromises.spf_dmarc = runSpfDmarc({ domain, scanId });
     }
     
@@ -288,21 +280,19 @@ async function processScan(job: ScanJob): Promise<void> {
     // This ensures web assets are discovered before TruffleHog scans them
     
     if (activeModules.includes('accessibility_scan')) {
-      log(`[${scanId}] STARTING accessibility compliance scan for ${domain} (immediate parallel)`);
       immediateParallelPromises.accessibility_scan = runAccessibilityScan({ domain, scanId });
     }
     
     if (activeModules.includes('config_exposure')) {
-      log(`[${scanId}] STARTING config exposure scanner for ${domain} (immediate parallel)`);
       immediateParallelPromises.config_exposure = runConfigExposureScanner({ domain, scanId });
     }
 
     // Wait for endpoint_discovery to complete before starting dependent modules
     let endpointResults = 0;
     if (immediateParallelPromises.endpoint_discovery) {
-      log(`[${scanId}] WAITING for endpoint discovery to complete for dependent modules...`);
+      // Waiting for endpoint discovery completion
       endpointResults = await immediateParallelPromises.endpoint_discovery;
-      log(`[${scanId}] COMPLETED endpoint discovery: ${endpointResults} endpoint collections found`);
+      log(`[${scanId}] COMPLETED endpoint discovery: ${endpointResults} findings`);
       delete immediateParallelPromises.endpoint_discovery; // Remove from remaining promises
       totalModuleResults += endpointResults;
       modulesCompleted += 1;
@@ -312,22 +302,18 @@ async function processScan(job: ScanJob): Promise<void> {
     const dependentParallelPromises: { [key: string]: Promise<number> } = {};
     
     if (activeModules.includes('nuclei')) {
-      log(`[${scanId}] STARTING Nuclei vulnerability scan for ${domain} (parallel after endpoint discovery)`);
       dependentParallelPromises.nuclei = runNuclei({ domain, scanId });
     }
     
     if (activeModules.includes('tech_stack_scan')) {
-      log(`[${scanId}] STARTING tech stack scan for ${domain} (parallel after endpoint discovery)`);
       dependentParallelPromises.tech_stack_scan = runTechStackScan({ domain, scanId });
     }
     
     if (activeModules.includes('abuse_intel_scan')) {
-      log(`[${scanId}] STARTING AbuseIPDB intelligence scan for IPs (parallel after endpoint discovery)`);
       dependentParallelPromises.abuse_intel_scan = runAbuseIntelScan({ scanId });
     }
     
     if (activeModules.includes('client_secret_scanner')) {
-      log(`[${scanId}] STARTING client-side secret scanner (parallel after endpoint discovery)`);
       dependentParallelPromises.client_secret_scanner = runClientSecretScanner({ scanId });
     }
 
@@ -336,7 +322,7 @@ async function processScan(job: ScanJob): Promise<void> {
       try {
         log(`[${scanId}] WAITING for ${moduleName} scan to complete...`);
         const results = await promise;
-        log(`[${scanId}] COMPLETED ${moduleName} scan: ${results} findings found`);
+        log(`[${scanId}] COMPLETED ${moduleName} scan: ${results} findings`);
         totalModuleResults += results;
         modulesCompleted += 1;
       } catch (error) {
@@ -349,7 +335,7 @@ async function processScan(job: ScanJob): Promise<void> {
       try {
         log(`[${scanId}] WAITING for ${moduleName} scan to complete...`);
         const results = await promise;
-        log(`[${scanId}] COMPLETED ${moduleName} scan: ${results} findings found`);
+        log(`[${scanId}] COMPLETED ${moduleName} scan: ${results} findings`);
         totalModuleResults += results;
         modulesCompleted += 1;
       } catch (error) {
@@ -374,65 +360,56 @@ async function processScan(job: ScanJob): Promise<void> {
         progress: progress
       });
       
-      log(`=== Running module: ${moduleName} (${modulesCompleted + 1}/${TOTAL_MODULES}) ===`);
+      // Running module (verbose logging removed)
       
       try {
         let moduleFindings = 0;
         
         switch (moduleName) {
           case 'rdp_vpn_templates':
-            log(`[${scanId}] STARTING RDP/VPN template scan for ${domain}`);
             moduleFindings = await runRdpVpnTemplates({ domain, scanId });
-            log(`[${scanId}] COMPLETED RDP/VPN scan: ${moduleFindings} services found`);
+            log(`[${scanId}] COMPLETED RDP/VPN scan: ${moduleFindings} findings`);
             break;
             
           case 'email_bruteforce_surface':
-            log(`[${scanId}] STARTING email bruteforce surface scan for ${domain}`);
             moduleFindings = await runEmailBruteforceSurface({ domain, scanId });
-            log(`[${scanId}] COMPLETED email surface scan: ${moduleFindings} exposures found`);
+            log(`[${scanId}] COMPLETED email surface scan: ${moduleFindings} findings`);
             break;
             
           case 'nuclei':
-            log(`[${scanId}] STARTING Nuclei vulnerability scan for ${domain}`);
             moduleFindings = await runNuclei({ domain, scanId });
-            log(`[${scanId}] COMPLETED Nuclei scan: ${moduleFindings} vulnerabilities found`);
+            log(`[${scanId}] COMPLETED Nuclei scan: ${moduleFindings} findings`);
             break;
             
           case 'zap_scan':
-            log(`[${scanId}] STARTING OWASP ZAP web application security scan for ${domain}`);
             moduleFindings = await runZAPScan({ domain, scanId });
-            log(`[${scanId}] COMPLETED ZAP scan: ${moduleFindings} web application vulnerabilities found`);
+            log(`[${scanId}] COMPLETED ZAP scan: ${moduleFindings} findings`);
             break;
             
           case 'db_port_scan':
-            log(`[${scanId}] STARTING database port scan for ${domain}`);
             moduleFindings = await runDbPortScan({ domain, scanId });
-            log(`[${scanId}] COMPLETED database scan: ${moduleFindings} database issues found`);
+            log(`[${scanId}] COMPLETED database scan: ${moduleFindings} findings`);
             break;
 
           case 'denial_wallet_scan':
-            log(`[${scanId}] STARTING denial-of-wallet vulnerability scan for ${domain}`);
             moduleFindings = await runDenialWalletScan({ domain, scanId });
-            log(`[${scanId}] COMPLETED denial-of-wallet scan: ${moduleFindings} cost amplification vulnerabilities found`);
+            log(`[${scanId}] COMPLETED denial-of-wallet scan: ${moduleFindings} findings`);
             break;
           
           case 'tls_scan':
-            log(`[${scanId}] STARTING TLS security scan for ${domain}`);
             moduleFindings = await runTlsScan({ domain, scanId });
-            log(`[${scanId}] COMPLETED TLS scan: ${moduleFindings} TLS issues found`);
+            log(`[${scanId}] COMPLETED TLS scan: ${moduleFindings} findings`);
             break;
             
           case 'rate_limit_scan':
-            log(`[${scanId}] STARTING rate limit analysis for ${domain}`);
             moduleFindings = await runRateLimitScan({ domain, scanId });
-            log(`[${scanId}] COMPLETED rate limit scan: ${moduleFindings} rate limit issues found`);
+            log(`[${scanId}] COMPLETED rate limit scan: ${moduleFindings} findings`);
             break;
             
             
           case 'spf_dmarc':
-            log(`[${scanId}] STARTING SPF/DMARC email security scan for ${domain}`);
             moduleFindings = await runSpfDmarc({ domain, scanId });
-            log(`[${scanId}] COMPLETED email security scan: ${moduleFindings} email issues found`);
+            log(`[${scanId}] COMPLETED email security scan: ${moduleFindings} findings`);
             break;
             
           // case 'trufflehog':
@@ -442,15 +419,13 @@ async function processScan(job: ScanJob): Promise<void> {
           //   break;
             
           case 'client_secret_scanner':
-            log(`[${scanId}] STARTING client-side secret scanner for ${domain}`);
             moduleFindings = await runClientSecretScanner({ scanId });
-            log(`[${scanId}] COMPLETED client secret scan: ${moduleFindings} secrets found`);
+            log(`[${scanId}] COMPLETED client secret scan: ${moduleFindings} findings`);
             break;
             
           case 'config_exposure':
-            log(`[${scanId}] STARTING config exposure scanner for ${domain}`);
             moduleFindings = await runConfigExposureScanner({ domain, scanId });
-            log(`[${scanId}] COMPLETED config exposure scan: ${moduleFindings} exposed secrets found`);
+            log(`[${scanId}] COMPLETED config exposure scan: ${moduleFindings} findings`);
             break;
             
           default:
@@ -488,21 +463,8 @@ async function processScan(job: ScanJob): Promise<void> {
       });
     }
 
-    // === REMEDIATION ENRICHMENT ===
-    log(`[${scanId}] === Starting Remediation Enrichment ===`);
-    try {
-      const enrichedCount = await enrichFindingsWithRemediation(scanId);
-      log(`[${scanId}] Remediation enrichment completed: ${enrichedCount} findings enhanced`);
-    } catch (error) {
-      log(`[${scanId}] Remediation enrichment failed (non-critical):`, error);
-      // Don't fail the entire scan if remediation fails
-      await insertArtifact({
-        type: 'scan_warning',
-        val_text: `Remediation enrichment skipped due to error: ${(error as Error).message}`,
-        severity: 'LOW',
-        meta: { scan_id: scanId, module: 'remediationPlanner' }
-      });
-    }
+    // === REMEDIATION MOVED TO SUPABASE ===
+    // Remediation functionality has been moved to Supabase edge functions
 
     // === SCAN COMPLETION ===
     const finalProgress = 100;

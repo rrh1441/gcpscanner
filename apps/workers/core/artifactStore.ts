@@ -69,8 +69,8 @@ export async function insertFinding(
     
     const result = await pool.query(query, params);
     
-    // Only log HIGH/CRITICAL findings to reduce log spam
-    if (findingType.includes('CRITICAL') || findingType.includes('MALICIOUS') || findingType.includes('EXPOSED')) {
+    // Only log CRITICAL/MALICIOUS findings to reduce log spam  
+    if (findingType.includes('CRITICAL') || findingType.includes('MALICIOUS')) {
       console.log(`[artifactStore] Inserted finding ${findingType} for artifact ${artifactId}${reproCommand ? ' with repro command' : ''}`);
     }
     return result.rows[0].id;
@@ -107,7 +107,6 @@ export async function initializeDatabase(): Promise<void> {
         recommendation TEXT NOT NULL,
         description TEXT NOT NULL,
         repro_command TEXT,
-        remediation JSONB,
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
@@ -130,23 +129,7 @@ export async function initializeDatabase(): Promise<void> {
       console.log('[artifactStore] Warning: Could not add repro_command column:', (error as Error).message);
     }
 
-    // Add remediation column to existing findings table if it doesn't exist
-    try {
-      await pool.query(`
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = 'findings' AND column_name = 'remediation'
-          ) THEN
-            ALTER TABLE findings ADD COLUMN remediation JSONB;
-            RAISE NOTICE 'Added remediation column to findings table';
-          END IF;
-        END$$;
-      `);
-    } catch (error) {
-      console.log('[artifactStore] Warning: Could not add remediation column:', (error as Error).message);
-    }
+    // Remediation column removed - functionality moved to Supabase
 
     // Create scans_master table for tracking scan status
     await pool.query(`
