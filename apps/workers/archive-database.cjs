@@ -5,7 +5,7 @@
  * Archives existing scan data and starts fresh for production reset
  */
 
-import { Pool } from 'pg';
+const { Pool } = require('pg');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || process.env.DB_URL
@@ -319,4 +319,4 @@ if (require.main === module) {
   });
 }
 
-export { executeArchival };
+module.exports = { executeArchival };

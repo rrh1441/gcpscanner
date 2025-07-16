@@ -51,6 +51,7 @@ SELECT COUNT(*) FROM artifacts;
 - Kill existing proxy if port conflicts: `lsof -ti:5432 | xargs kill -9`
 - Always use `localhost` not `flycast` when proxy is active
 - Connection string: `postgresql://postgres@localhost:5433/postgres?sslmode=disable`
+- Proxy command may timeout after 2 minutes but still establish connection successfully
 
 ### Method 2: Docker psql (if psql not installed locally)
 ```bash
@@ -59,7 +60,31 @@ docker run --rm -it --network host postgres \
   psql "postgresql://postgres:EWLwYpuVkFIb@localhost:5433/postgres?sslmode=disable"
 ```
 
-### Method 3: Interactive SSH (for Node.js queries)
+### Method 3: Running Node.js Scripts Locally (for complex operations)
+**Problem**: Local Node.js scripts need access to `pg` module and database connection
+**Solution**: Run scripts from workers directory where pg module is available
+
+```bash
+# Step 1: Ensure proxy is running
+fly proxy 5433 -a dealbrief-scanner-db &
+
+# Step 2: Copy script to workers directory (required for pg module access)
+cp your-script.js apps/workers/
+
+# Step 3: Navigate to workers directory
+cd apps/workers
+
+# Step 4: Run script with proper DATABASE_URL
+export DATABASE_URL="postgresql://postgres:EWLwYpuVkFIb@localhost:5433/postgres?sslmode=disable"
+node your-script.js
+```
+
+**For ES Module Issues**:
+- Workers package uses `"type": "module"` in package.json
+- CommonJS scripts (using `require()`) must use `.cjs` extension
+- Example: `mv script.js script.cjs && node script.cjs`
+
+### Method 4: Interactive SSH (for Node.js queries)
 ```bash
 fly ssh console -a dealbrief-scanner --machine 286565eb5406d8
 # Inside VM - no -C quoting issues:
@@ -137,6 +162,12 @@ GROUP BY meta->>'scan_module';
 - **SASL password error**: Usually means environment variables aren't loaded properly
 - **Connection refused**: Database proxy might not be running or wrong credentials
 - **Module not found**: Need to run from correct directory with built assets
+
+### Node.js Script Issues
+- **Cannot find module 'pg'**: Script must run from `apps/workers/` directory or copy script there
+- **require is not defined in ES module scope**: Rename `.js` files to `.cjs` in workers directory
+- **Archive verification failed**: Normal if archive tables have existing data from previous runs
+- **Proxy timeout**: Command may timeout but connection still establishes successfully
 
 ### SSH Session Issues  
 - **Host unavailable**: Try specifying machine ID with `-m machine-id`
@@ -230,5 +261,51 @@ LEFT JOIN findings f ON a.id = f.artifact_id
 WHERE a.type = 'secret' 
 AND a.created_at > NOW() - INTERVAL '1 hour'
 ORDER BY a.created_at DESC;
+"
+```
+
+## Database Archival Operations
+
+### Running Archive Script
+```bash
+# Step 1: Start proxy
+fly proxy 5433 -a dealbrief-scanner-db &
+
+# Step 2: Copy script to workers directory for pg module access
+cp archive-database.js apps/workers/
+
+# Step 3: Navigate to workers directory and rename for ES module compatibility
+cd apps/workers
+mv archive-database.js archive-database.cjs
+
+# Step 4: Run archival
+export DATABASE_URL="postgresql://postgres:EWLwYpuVkFIb@localhost:5433/postgres?sslmode=disable"
+node archive-database.cjs
+```
+
+### Manual Cleanup After Archival
+```bash
+# If archival verification fails due to existing archive data, manually clean production tables
+export PGPASSWORD=EWLwYpuVkFIb
+psql "postgresql://postgres@localhost:5433/postgres?sslmode=disable" -c "
+BEGIN;
+TRUNCATE findings CASCADE;
+TRUNCATE artifacts CASCADE; 
+TRUNCATE scans_master CASCADE;
+DELETE FROM worker_instances;
+ALTER SEQUENCE IF EXISTS artifacts_id_seq RESTART WITH 1;
+ALTER SEQUENCE IF EXISTS findings_id_seq RESTART WITH 1;
+COMMIT;
+"
+```
+
+### Verify Archival Status
+```bash
+export PGPASSWORD=EWLwYpuVkFIb
+psql "postgresql://postgres@localhost:5433/postgres?sslmode=disable" -c "
+SELECT 'artifacts' as table_name, COUNT(*) as count FROM artifacts
+UNION ALL SELECT 'artifacts_archive' as table_name, COUNT(*) as count FROM artifacts_archive
+UNION ALL SELECT 'findings' as table_name, COUNT(*) as count FROM findings  
+UNION ALL SELECT 'findings_archive' as table_name, COUNT(*) as count FROM findings_archive;
 "
 ```
