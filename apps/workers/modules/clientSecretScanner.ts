@@ -130,19 +130,77 @@ function getSecretPatterns(): SecretPattern[] {
 // ------------------------------------------------------------------
 // 3. Helpers
 // ------------------------------------------------------------------
+
+// Check if a match is within CSS context
+function isInCSSContext(content: string, matchIndex: number): boolean {
+  const beforeMatch = content.slice(Math.max(0, matchIndex - 100), matchIndex);
+  const afterMatch = content.slice(matchIndex, matchIndex + 100);
+  
+  // Check for CSS custom property definitions: --variable-name: value
+  if (beforeMatch.includes('--') && (beforeMatch.includes(':') || afterMatch.includes(':'))) {
+    return true;
+  }
+  
+  // Check for CSS class definitions or selectors
+  if (beforeMatch.match(/\.([\w-]+\s*{[^}]*|[\w-]+\s*:)/)) {
+    return true;
+  }
+  
+  // Check for CSS-in-JS or style objects
+  if (beforeMatch.match(/(style|css|theme|colors?)\s*[=:]\s*[{\[]/)) {
+    return true;
+  }
+  
+  // Check for Tailwind config context
+  if (beforeMatch.match(/(tailwind\.config|theme\s*:|extend\s*:)/)) {
+    return true;
+  }
+  
+  return false;
+}
+
 function findSecrets(content: string): SecretHit[] {
   const hits: SecretHit[] = [];
   for (const pattern of getSecretPatterns()) {
     for (const m of content.matchAll(pattern.regex)) {
-      hits.push({ pattern, match: m[1] || m[0] });
+      const match = m[1] || m[0];
+      const matchIndex = m.index || 0;
+      
+      // Skip if this looks like a CSS variable or is in CSS context
+      if (isCSSVariable(match) || isInCSSContext(content, matchIndex)) {
+        continue;
+      }
+      
+      hits.push({ pattern, match });
     }
   }
   return hits;
 }
 
+// CSS variable patterns that should be ignored
+const CSS_VARIABLE_PATTERNS = [
+  /^--[a-zA-Z-]+$/,                    // Standard CSS custom properties: --primary-color
+  /^tw-[a-zA-Z-]+$/,                   // Tailwind CSS variables: tw-ring-color
+  /^(primary|secondary|destructive|muted|accent|popover|card|border|input|ring|background|foreground)-?(border|foreground|background)?$/,
+  /^(sidebar|chart)-[a-zA-Z0-9-]+$/,  // UI component variables: sidebar-primary, chart-1
+  /^hsl\([0-9\s,%]+\)$/,              // HSL color values: hsl(210, 40%, 98%)
+  /^rgb\([0-9\s,%]+\)$/,              // RGB color values: rgb(255, 255, 255)
+  /^#[0-9a-fA-F]{3,8}$/,              // Hex colors: #ffffff, #fff
+  /^[0-9]+(\.[0-9]+)?(px|em|rem|%|vh|vw|pt)$/,  // CSS units: 1rem, 100px, 50%
+];
+
+// Check if a string looks like a CSS variable or design token
+function isCSSVariable(s: string): boolean {
+  return CSS_VARIABLE_PATTERNS.some(pattern => pattern.test(s));
+}
+
 // Optional entropy fallback
 function looksRandom(s: string): boolean {
   if (s.length < 24) return false;
+  
+  // Skip CSS variables and design tokens
+  if (isCSSVariable(s)) return false;
+  
   const freq: Record<string, number> = {};
   for (const ch of Buffer.from(s)) freq[ch] = (freq[ch] ?? 0) + 1;
   const H = Object.values(freq).reduce((h,c) => h - (c/s.length)*Math.log2(c/s.length), 0);
@@ -179,10 +237,25 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
       // entropy heuristic – optional low-severity catch-all
       for (const m of asset.content.matchAll(/[A-Za-z0-9\/+=_-]{24,}/g)) {
         const t = m[0];
-        if (looksRandom(t)) hits.push({
-          pattern: { name:'High-entropy token', regex:/./, severity:'MEDIUM' },
-          match: t
-        });
+        const matchIndex = m.index || 0;
+        
+        // Skip if this looks like a CSS variable or is in CSS context
+        if (isCSSVariable(t) || isInCSSContext(asset.content, matchIndex)) {
+          continue;
+        }
+        
+        if (looksRandom(t)) {
+          // Provide context about what this might be
+          const context = asset.content.slice(Math.max(0, matchIndex - 50), matchIndex + 50);
+          const contextHint = context.includes('css') || context.includes('style') || context.includes('theme') 
+            ? 'CSS/theme token - likely false positive' 
+            : 'High-entropy token - potential secret';
+            
+          hits.push({
+            pattern: { name: contextHint, regex:/./, severity:'MEDIUM' },
+            match: t
+          });
+        }
       }
 
       if (!hits.length) continue;
