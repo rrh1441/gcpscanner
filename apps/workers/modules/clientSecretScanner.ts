@@ -6,6 +6,7 @@ import { log } from '../core/logger.js';
 
 import fs from 'node:fs';
 import yaml from 'yaml';                       // ← NEW – tiny dependency
+import OpenAI from 'openai';
 
 // ------------------------------------------------------------------
 // Types
@@ -19,7 +20,10 @@ interface SecretPattern {
   severity:  'CRITICAL' | 'HIGH' | 'MEDIUM';
   verify?:  (key: string) => Promise<boolean>;   // optional future hook
 }
-type SecretHit = { pattern: SecretPattern; match: string };
+type SecretHit = { pattern: SecretPattern; match: string; context?: string };
+
+// LLM validation cache to avoid redundant checks
+const llmValidationCache = new Map<string, boolean>();
 
 // ------------------------------------------------------------------
 // 1. Curated high-precision built-in patterns
@@ -133,8 +137,9 @@ function getSecretPatterns(): SecretPattern[] {
 
 // Check if a match is within CSS context
 function isInCSSContext(content: string, matchIndex: number): boolean {
-  const beforeMatch = content.slice(Math.max(0, matchIndex - 100), matchIndex);
-  const afterMatch = content.slice(matchIndex, matchIndex + 100);
+  const beforeMatch = content.slice(Math.max(0, matchIndex - 200), matchIndex);
+  const afterMatch = content.slice(matchIndex, matchIndex + 200);
+  const fullContext = beforeMatch + afterMatch;
   
   // Check for CSS custom property definitions: --variable-name: value
   if (beforeMatch.includes('--') && (beforeMatch.includes(':') || afterMatch.includes(':'))) {
@@ -147,12 +152,32 @@ function isInCSSContext(content: string, matchIndex: number): boolean {
   }
   
   // Check for CSS-in-JS or style objects
-  if (beforeMatch.match(/(style|css|theme|colors?)\s*[=:]\s*[{\[]/)) {
+  if (beforeMatch.match(/(style|css|theme|colors?|styles|stylesheet)\s*[=:]\s*[{\[`"']/i)) {
     return true;
   }
   
   // Check for Tailwind config context
   if (beforeMatch.match(/(tailwind\.config|theme\s*:|extend\s*:)/)) {
+    return true;
+  }
+  
+  // Check for CSS property context (property: value)
+  if (beforeMatch.match(/[a-zA-Z-]+\s*:\s*['"]?$/) || afterMatch.match(/^['"]?\s*[;,}]/)) {
+    return true;
+  }
+  
+  // Check for HTML attribute context
+  if (beforeMatch.match(/<[^>]+\s+(style|class|className|data-[a-zA-Z-]+|aria-[a-zA-Z-]+)\s*=\s*['"]?$/)) {
+    return true;
+  }
+  
+  // Check for common CSS/HTML file patterns
+  if (fullContext.match(/<style[^>]*>|<\/style>|\.css\s*['"`]|\.scss\s*['"`]|\.sass\s*['"`]/i)) {
+    return true;
+  }
+  
+  // Check for CSS framework contexts
+  if (fullContext.match(/\b(mui|material-ui|styled-components|emotion|stitches|css-modules)\b/i)) {
     return true;
   }
   
@@ -187,6 +212,17 @@ const CSS_VARIABLE_PATTERNS = [
   /^rgb\([0-9\s,%]+\)$/,              // RGB color values: rgb(255, 255, 255)
   /^#[0-9a-fA-F]{3,8}$/,              // Hex colors: #ffffff, #fff
   /^[0-9]+(\.[0-9]+)?(px|em|rem|%|vh|vw|pt)$/,  // CSS units: 1rem, 100px, 50%
+  /^-webkit-[a-zA-Z-]+$/,             // Webkit CSS properties: -webkit-tap-highlight-color
+  /^-moz-[a-zA-Z-]+$/,                // Mozilla CSS properties: -moz-appearance
+  /^-ms-[a-zA-Z-]+$/,                 // Microsoft CSS properties: -ms-flex
+  /^transition-[a-zA-Z-]+$/,          // CSS transition properties: transition-timing-function
+  /^animation-[a-zA-Z-]+$/,           // CSS animation properties: animation-timing-function
+  /^transform-[a-zA-Z-]+$/,           // CSS transform properties: transform-origin
+  /^flex-[a-zA-Z-]+$/,                // CSS flex properties: flex-direction
+  /^grid-[a-zA-Z-]+$/,                // CSS grid properties: grid-template-columns
+  /^data-[a-zA-Z-]+=\w+$/,            // HTML data attributes: data-panel-group-direction=vertical
+  /^aria-[a-zA-Z-]+=\w+$/,            // ARIA attributes: aria-expanded=true
+  /^[a-zA-Z]+-[a-zA-Z-]+$/,           // Generic CSS property pattern: background-color, font-family
 ];
 
 // Check if a string looks like a CSS variable or design token
@@ -205,6 +241,70 @@ function looksRandom(s: string): boolean {
   for (const ch of Buffer.from(s)) freq[ch] = (freq[ch] ?? 0) + 1;
   const H = Object.values(freq).reduce((h,c) => h - (c/s.length)*Math.log2(c/s.length), 0);
   return H / 8 > 0.35;
+}
+
+// Batch validate potential secrets with LLM
+async function validateSecretsWithLLM(candidates: Array<{match: string, context: string}>): Promise<Map<string, boolean>> {
+  const results = new Map<string, boolean>();
+  
+  // Check cache first
+  const uncachedCandidates = candidates.filter(c => !llmValidationCache.has(c.match));
+  if (uncachedCandidates.length === 0) {
+    candidates.forEach(c => results.set(c.match, llmValidationCache.get(c.match) || false));
+    return results;
+  }
+  
+  try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    
+    const prompt = `Analyze these potential secrets found in web assets. Return ONLY a JSON array of booleans in the same order.
+True = likely a real secret/credential, False = CSS/HTML/benign code.
+
+Candidates:
+${uncachedCandidates.map((c, i) => `${i+1}. Token: "${c.match.slice(0, 50)}${c.match.length > 50 ? '...' : ''}"
+   Context: ${c.context}`).join('\n\n')}
+
+Rules:
+- CSS properties, HTML attributes, style values = False
+- API keys, tokens, passwords, JWTs, database URLs = True
+- Base64 that decodes to CSS/HTML = False
+- Webpack chunks, CSS hashes = False
+
+Response format: [true, false, true, ...]`;
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0,
+      max_tokens: 1000,
+    });
+    
+    const content = response.choices[0]?.message?.content || '[]';
+    const validationResults = JSON.parse(content) as boolean[];
+    
+    // Store results in cache and return map
+    uncachedCandidates.forEach((c, i) => {
+      const isSecret = validationResults[i] ?? false;
+      llmValidationCache.set(c.match, isSecret);
+      results.set(c.match, isSecret);
+    });
+    
+    // Add cached results
+    candidates.forEach(c => {
+      if (!results.has(c.match)) {
+        results.set(c.match, llmValidationCache.get(c.match) || false);
+      }
+    });
+    
+    log(`[clientSecretScanner] LLM validated ${uncachedCandidates.length} candidates: ${validationResults.filter(v => v).length} secrets, ${validationResults.filter(v => !v).length} false positives`);
+    
+  } catch (err) {
+    log('[clientSecretScanner] LLM validation failed:', (err as Error).message);
+    // On error, be conservative and mark all as potential secrets
+    candidates.forEach(c => results.set(c.match, true));
+  }
+  
+  return results;
 }
 
 // ------------------------------------------------------------------
@@ -231,11 +331,15 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
 
     log(`[clientSecretScanner] scanning ${assets.length}/${rows[0].meta.assets.length} assets`);
 
+    // Collect all potential secrets across all assets for batch validation
+    const allCandidates: Array<{asset: WebAsset, hits: SecretHit[]}> = [];
+    
     for (const asset of assets) {
       let hits = findSecrets(asset.content);
 
       // entropy heuristic – optional low-severity catch-all
-      for (const m of asset.content.matchAll(/[A-Za-z0-9\/+=_-]{24,}/g)) {
+      // Only match tokens that look like actual secrets (base64, hex, alphanumeric with special chars)
+      for (const m of asset.content.matchAll(/\b[A-Za-z0-9\/+=_]{32,}[A-Za-z0-9\/+=_]*\b/g)) {
         const t = m[0];
         const matchIndex = m.index || 0;
         
@@ -244,25 +348,59 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
           continue;
         }
         
+        // Skip common false positives
+        if (t.match(/^[a-zA-Z-]+$/) ||           // Only letters and hyphens (CSS properties)
+            t.match(/^[0-9]+$/) ||               // Only numbers
+            t.includes('--') ||                  // CSS custom properties
+            t.startsWith('data-') ||             // Data attributes
+            t.startsWith('aria-') ||             // ARIA attributes
+            t.match(/^(webkit|moz|ms|o)-/) ||   // Vendor prefixes
+            t.match(/(color|theme|style|class|component|module|chunk|vendor|polyfill)/i)) {  // Common non-secret patterns
+          continue;
+        }
+        
         if (looksRandom(t)) {
-          // Provide context about what this might be
-          const context = asset.content.slice(Math.max(0, matchIndex - 50), matchIndex + 50);
-          const contextHint = context.includes('css') || context.includes('style') || context.includes('theme') 
-            ? 'CSS/theme token - likely false positive' 
-            : 'High-entropy token - potential secret';
-            
+          const context = asset.content.slice(Math.max(0, matchIndex - 50), Math.min(asset.content.length, matchIndex + 50));
           hits.push({
-            pattern: { name: contextHint, regex:/./, severity:'MEDIUM' },
-            match: t
+            pattern: { name: 'High-entropy token - potential secret', regex:/./, severity:'MEDIUM' },
+            match: t,
+            context: context.replace(/\s+/g, ' ').trim()
           });
         }
       }
 
-      if (!hits.length) continue;
-      log(`[clientSecretScanner] ${hits.length} hit(s) → ${asset.url}`);
+      if (hits.length > 0) {
+        allCandidates.push({ asset, hits });
+      }
+    }
+
+    // Batch validate all entropy-based candidates with LLM
+    const entropyBasedCandidates = allCandidates.flatMap(({ hits }) => 
+      hits.filter(h => h.pattern.name.includes('High-entropy')).map(h => ({ match: h.match, context: h.context || '' }))
+    );
+    
+    let llmValidationMap = new Map<string, boolean>();
+    if (entropyBasedCandidates.length > 0) {
+      log(`[clientSecretScanner] validating ${entropyBasedCandidates.length} entropy-based candidates with LLM`);
+      llmValidationMap = await validateSecretsWithLLM(entropyBasedCandidates);
+    }
+
+    // Process validated results
+    for (const { asset, hits } of allCandidates) {
+      // Filter hits based on LLM validation for entropy-based detections
+      const validatedHits = hits.filter(hit => {
+        if (hit.pattern.name.includes('High-entropy')) {
+          return llmValidationMap.get(hit.match) || false;
+        }
+        // Keep all regex-based detections (they're already high-precision)
+        return true;
+      });
+
+      if (!validatedHits.length) continue;
+      log(`[clientSecretScanner] ${validatedHits.length} validated hit(s) → ${asset.url}`);
       let assetHits = 0;
 
-      for (const { pattern, match } of hits) {
+      for (const { pattern, match } of validatedHits) {
         if (++assetHits > 25) { log('  ↪ noisy asset, truncated'); break; }
         total++;
 
