@@ -112,20 +112,28 @@ async function spawnWorkers(backlog: number): Promise<void> {
       return;                          // already enough
     }
 
-    // 2 — start stopped Machines first
-    const toStart = Math.min(need, stopped.length);
-    for (let i = 0; i < toStart; i++) {
-      const m = stopped[i];
-      const r = await fetch(`${BASE_URL}/${m.id}/start`, {
-        method: 'POST', 
-        headers: HDRS 
-      });
-      log(`[queue-monitor] start ${m.id}`, r.ok ? '✔︎' : `${r.status} ${await r.text()}`);
+    // 2 — Clean up stopped machines first to free up slots
+    if (stopped.length > 0) {
+      log(`[queue-monitor] Cleaning up ${stopped.length} stopped workers before creating new ones`);
+      for (const m of stopped) {
+        try {
+          const destroyRes = await fetch(`${BASE_URL}/${m.id}?force=true`, {
+            method: 'DELETE',
+            headers: HDRS
+          });
+          if (destroyRes.ok) {
+            log(`[queue-monitor] ✅ Destroyed stopped worker ${m.id}`);
+          } else {
+            log(`[queue-monitor] ❌ Failed to destroy worker ${m.id}: ${destroyRes.status}`);
+          }
+        } catch (err) {
+          log(`[queue-monitor] Error destroying worker ${m.id}:`, (err as Error).message);
+        }
+      }
     }
 
     // 3 — create new machines if still needed (no template required!)
-    const stillNeed = need - toStart;
-    for (let i = 0; i < stillNeed; i++) {
+    for (let i = 0; i < need; i++) {
       const machineConfig = {
         name: `scanner_worker_${Date.now()}_${i}`,
         region: REGION,
@@ -183,6 +191,57 @@ async function shutdownWorkers(count: number): Promise<void> {
   log(`[queue-monitor] Letting Fly auto-shutdown ${count} idle workers...`);
 }
 
+async function cleanupStoppedWorkers(): Promise<void> {
+  const token = process.env.FLY_API_TOKEN;
+  if (!token) {
+    return;
+  }
+
+  const APP = process.env.FLY_APP_NAME ?? 'dealbrief-scanner';
+  const GROUP = 'scanner_worker';
+  const BASE_URL = `https://api.machines.dev/v1/apps/${APP}/machines`;
+  const HDRS = { Authorization: `Bearer ${token}` };
+
+  try {
+    const res = await fetch(BASE_URL, { headers: HDRS });
+    if (!res.ok) {
+      log('[queue-monitor] Failed to list machines for cleanup:', res.status);
+      return;
+    }
+    
+    const machines = await res.json();
+    const stoppedWorkers = machines.filter((m: any) => 
+      m.process_group === GROUP && m.state === 'stopped'
+    );
+    
+    if (stoppedWorkers.length === 0) {
+      return;
+    }
+    
+    log(`[queue-monitor] Found ${stoppedWorkers.length} stopped scanner_worker machines to clean up`);
+    
+    // Destroy all stopped scanner_worker machines
+    for (const machine of stoppedWorkers) {
+      try {
+        const destroyRes = await fetch(`${BASE_URL}/${machine.id}?force=true`, {
+          method: 'DELETE',
+          headers: HDRS
+        });
+        
+        if (destroyRes.ok) {
+          log(`[queue-monitor] ✅ Destroyed stopped worker ${machine.id}`);
+        } else {
+          log(`[queue-monitor] ❌ Failed to destroy worker ${machine.id}: ${destroyRes.status}`);
+        }
+      } catch (err) {
+        log(`[queue-monitor] Error destroying worker ${machine.id}:`, (err as Error).message);
+      }
+    }
+  } catch (error) {
+    log('[queue-monitor] Error during cleanup:', (error as Error).message);
+  }
+}
+
 // Queue monitoring cron job - runs every minute
 async function queueMonitorCron(): Promise<void> {
   try {
@@ -195,6 +254,9 @@ async function queueMonitorCron(): Promise<void> {
     if (neededWorkers > runningWorkers) {
       await spawnWorkers(neededWorkers - runningWorkers);
     }
+    
+    // Clean up stopped workers to prevent hitting machine limit
+    await cleanupStoppedWorkers();
 
   } catch (error) {
     log('[queue-monitor] Error in monitoring:', (error as Error).message);
