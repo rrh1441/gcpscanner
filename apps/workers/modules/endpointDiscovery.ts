@@ -27,6 +27,12 @@ const MAX_JS_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1 MB
 const VIS_PROBE_CONCURRENCY = 5;
 const VIS_PROBE_TIMEOUT = 10_000;
 
+// Anti-infinite operation protection
+const MAX_TOTAL_OPERATIONS = 5000; // Maximum operations per scan
+const MAX_OPERATION_TIME_MS = 10 * 60 * 1000; // 10 minutes total
+let operationCount = 0;
+let scanStartTime = 0;
+
 const ENDPOINT_WORDLIST = [
   'api',
   'admin',
@@ -248,10 +254,36 @@ const addEndpoint = (
   log(`[endpointDiscovery] +${ep.source} ${ep.path} (${ep.statusCode ?? '-'})`);
 };
 
+// Memory limits to prevent exhaustion
+const MAX_WEB_ASSETS = 1000; // Maximum number of web assets to collect
+const MAX_ASSET_SIZE = 2 * 1024 * 1024; // 2MB per asset
+const MAX_TOTAL_ASSET_SIZE = 100 * 1024 * 1024; // 100MB total asset content
+
+let totalAssetSize = 0;
+
 const addWebAsset = (asset: WebAsset): void => {
   if (webAssets.has(asset.url)) return;
+  
+  // Check memory limits
+  if (webAssets.size >= MAX_WEB_ASSETS) {
+    log(`[endpointDiscovery] Asset limit reached (${MAX_WEB_ASSETS}), skipping: ${asset.url}`);
+    return;
+  }
+  
+  const assetSize = asset.content?.length || asset.size || 0;
+  if (assetSize > MAX_ASSET_SIZE) {
+    log(`[endpointDiscovery] Asset too large (${assetSize} bytes), skipping: ${asset.url}`);
+    return;
+  }
+  
+  if (totalAssetSize + assetSize > MAX_TOTAL_ASSET_SIZE) {
+    log(`[endpointDiscovery] Total asset size limit reached, skipping: ${asset.url}`);
+    return;
+  }
+  
+  totalAssetSize += assetSize;
   webAssets.set(asset.url, asset);
-  log(`[endpointDiscovery] +web_asset ${asset.type} ${asset.url} (${asset.size ?? '?'} bytes)`);
+  log(`[endpointDiscovery] +web_asset ${asset.type} ${asset.url} (${assetSize} bytes, ${Math.round(totalAssetSize/1024/1024)}MB total)`);
 };
 
 const getAssetType = (url: string, mimeType?: string): WebAsset['type'] => {
@@ -399,6 +431,18 @@ const crawlPage = async (
   baseUrl: string,
   seen: Set<string>
 ): Promise<void> => {
+  // Circuit breaker: prevent infinite operations
+  operationCount++;
+  if (operationCount > MAX_TOTAL_OPERATIONS) {
+    log(`[endpointDiscovery] Operation limit reached (${MAX_TOTAL_OPERATIONS}), stopping crawl`);
+    return;
+  }
+  
+  if (scanStartTime > 0 && Date.now() - scanStartTime > MAX_OPERATION_TIME_MS) {
+    log(`[endpointDiscovery] Time limit reached (${MAX_OPERATION_TIME_MS}ms), stopping crawl`);
+    return;
+  }
+  
   if (depth > MAX_CRAWL_DEPTH || seen.has(url)) return;
   seen.add(url);
 
@@ -507,6 +551,12 @@ const analyzeCssFile = async (cssUrl: string, baseUrl: string): Promise<void> =>
 // ---------- Brute-Force / Auth Probe -----------------------------------------
 
 const bruteForce = async (baseUrl: string): Promise<void> => {
+  // Circuit breaker: check operation limits
+  if (operationCount > MAX_TOTAL_OPERATIONS * 0.8) { // Reserve 20% for other operations
+    log(`[endpointDiscovery] Skipping brute force - operation limit approaching`);
+    return;
+  }
+  
   const tasks = ENDPOINT_WORDLIST.flatMap((word) => {
     const path = `/${word}`;
     const uaHeader = { 'User-Agent': getRandomUA() };
@@ -643,8 +693,14 @@ const probeHighValuePaths = async (baseUrl: string): Promise<void> => {
 export async function runEndpointDiscovery(job: { domain: string; scanId?: string }): Promise<number> {
   log(`[endpointDiscovery] ⇢ start ${job.domain}`);
   const baseUrl = `https://${job.domain}`;
+  
+  // Initialize anti-infinite operation protection
+  operationCount = 0;
+  scanStartTime = Date.now();
+  
   discovered.clear();
   webAssets.clear();
+  totalAssetSize = 0; // Reset memory usage counter
 
   // Existing discovery methods
   await parseRobotsTxt(baseUrl);

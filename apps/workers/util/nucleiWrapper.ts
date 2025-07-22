@@ -405,6 +405,7 @@ export async function runNuclei(options: NucleiOptions): Promise<NucleiExecution
   await new Promise<void>((resolve, reject) => {
     const nucleiProcess = spawn('/usr/local/bin/nuclei', args, {
       stdio: 'pipe', // Always capture output to parse JSON-L results
+      detached: true, // Start in new process group for proper cleanup
       env: { 
         ...process.env, 
         NO_COLOR: '1',
@@ -493,13 +494,25 @@ export async function runNuclei(options: NucleiOptions): Promise<NucleiExecution
       nucleiProcess.kill('SIGTERM');
       
       // Grace period for cleanup, then SIGKILL
-      setTimeout(() => {
-        if (!nucleiProcess.killed) {
+      const killHandle = setTimeout(() => {
+        if (!nucleiProcess.killed && nucleiProcess.pid) {
           log(`Nuclei did not exit gracefully, sending SIGKILL`);
-          nucleiProcess.kill('SIGKILL');
+          try {
+            // Kill the process group to ensure child processes are cleaned up
+            process.kill(-nucleiProcess.pid, 'SIGKILL');
+          } catch (error) {
+            log(`Failed to kill process group: ${error}`);
+            // Fallback to killing just the main process
+            nucleiProcess.kill('SIGKILL');
+          }
         }
         reject(new Error(`Nuclei execution timed out after ${timeoutMs}ms`));
       }, gracePeriodMs);
+      
+      // Clean up kill handle if process exits normally
+      nucleiProcess.once('exit', () => {
+        clearTimeout(killHandle);
+      });
     }, timeoutMs);
   });
   

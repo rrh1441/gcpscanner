@@ -699,10 +699,24 @@ export async function runTlsScan(job: { domain: string; scanId?: string }): Prom
   let totalFindings = 0;
   let anyCert = false;
 
-  for (const host of candidates) {
-    const { findings, hadCert } = await scanHost(host, job.scanId);
-    totalFindings += findings;
-    anyCert ||= hadCert;
+  // Process hosts with controlled concurrency to prevent resource exhaustion
+  const MAX_CONCURRENT_TLS_SCANS = 3;
+  const hostArray = Array.from(candidates);
+  
+  for (let i = 0; i < hostArray.length; i += MAX_CONCURRENT_TLS_SCANS) {
+    const chunk = hostArray.slice(i, i + MAX_CONCURRENT_TLS_SCANS);
+    const results = await Promise.allSettled(
+      chunk.map(host => scanHost(host, job.scanId))
+    );
+    
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        totalFindings += result.value.findings;
+        anyCert ||= result.value.hadCert;
+      } else {
+        log(`[tlsScan] Host scan failed: ${result.reason}`);
+      }
+    }
   }
 
   /* Consolidated "no TLS at all" finding (only if *all* hosts lack cert) */

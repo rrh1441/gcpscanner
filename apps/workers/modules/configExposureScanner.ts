@@ -142,7 +142,15 @@ interface ConfigFile {
 
 async function probeConfigFile(baseUrl: string, path: string): Promise<ConfigFile | null> {
   try {
-    const url = `${baseUrl}${path}`;
+    // Validate path to prevent traversal attacks
+    if (!path.startsWith('/') || path.includes('../') || path.includes('..\\') || path.includes('%2e%2e')) {
+      throw new Error(`Invalid path: ${path}`);
+    }
+    
+    // Normalize path
+    const normalizedPath = path.replace(/\/+/g, '/');
+    const url = `${baseUrl}${normalizedPath}`;
+    
     const response = await axios.get(url, {
       timeout: 10000,
       maxContentLength: 5 * 1024 * 1024, // 5MB max

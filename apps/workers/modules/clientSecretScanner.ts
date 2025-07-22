@@ -180,7 +180,7 @@ async function llmFallbackForTriage(sample: string, around: string): Promise<boo
     return answer === 'true';
     
   } catch (error) {
-    log('[SecretSanity] LLM fallback failed:', (error as Error).message);
+    log('[SecretSanity] LLM fallback failed', { error: error as Error });
     return false;
   }
 }
@@ -362,7 +362,7 @@ function loadPluginPatterns(): SecretPattern[] {
     return cachedPluginPatterns;
     
   } catch (err) {
-    log('[clientSecretScanner] Failed to load plug-in regexes:', (err as Error).message);
+    log('[clientSecretScanner] Failed to load plug-in regexes', { error: err as Error });
     cachedPluginPatterns = [];
     return cachedPluginPatterns;
   }
@@ -572,7 +572,7 @@ Response format: [true, false, true, ...]`;
     log(`[clientSecretScanner] LLM validated ${uncachedCandidates.length} candidates: ${validationResults.filter(v => v).length} secrets, ${validationResults.filter(v => !v).length} false positives`);
     
   } catch (err) {
-    log('[clientSecretScanner] LLM validation failed:', (err as Error).message);
+    log('[clientSecretScanner] LLM validation failed', { error: err as Error });
     // On error, be conservative and mark all as potential secrets
     candidates.forEach(c => results.set(c.match, true));
   }
@@ -599,10 +599,29 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
       log('[clientSecretScanner] no assets to scan'); return 0;
     }
 
+    // Memory limits to prevent exhaustion
+    const MAX_ASSET_SIZE = 5 * 1024 * 1024; // 5MB per asset
+    const MAX_TOTAL_ASSETS = 500; // Maximum number of assets to process
+    const MAX_TOTAL_CONTENT = 50 * 1024 * 1024; // 50MB total content limit
+    
+    let totalContentSize = 0;
     const assets = (rows[0].meta.assets as WebAsset[])
-      .filter(a => a.content && a.content !== '[binary content]');
+      .filter(a => a.content && a.content !== '[binary content]')
+      .filter(a => {
+        if (a.content.length > MAX_ASSET_SIZE) {
+          log(`[clientSecretScanner] Skipping oversized asset: ${a.url} (${a.content.length} bytes)`);
+          return false;
+        }
+        if (totalContentSize + a.content.length > MAX_TOTAL_CONTENT) {
+          log(`[clientSecretScanner] Total content limit reached, skipping remaining assets`);
+          return false;
+        }
+        totalContentSize += a.content.length;
+        return true;
+      })
+      .slice(0, MAX_TOTAL_ASSETS);
 
-    log(`[clientSecretScanner] scanning ${assets.length}/${rows[0].meta.assets.length} assets`);
+    log(`[clientSecretScanner] scanning ${assets.length}/${rows[0].meta.assets.length} assets (${Math.round(totalContentSize/1024/1024)}MB total)`);
 
     // Collect all potential secrets across all assets for batch validation
     const allCandidates: Array<{asset: WebAsset, hits: SecretHit[]}> = [];
@@ -712,7 +731,7 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
       }
     }
   } catch (err) {
-    log('[clientSecretScanner] error:', (err as Error).message);
+    log('[clientSecretScanner] error', { error: err as Error });
   }
 
   await insertArtifact({

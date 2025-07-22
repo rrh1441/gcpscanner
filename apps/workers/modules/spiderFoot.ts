@@ -141,15 +141,22 @@ export async function runSpiderFoot(job: { domain: string; scanId: string }): Pr
     log(`[SpiderFoot] API keys: HIBP ${mask(config.haveibeenpwnd_api_key)}, Chaos ${mask(config.chaos_api_key)} (Shodan/Censys handled by dedicated modules)`);
     await fs.writeFile(`${confDir}/spiderfoot.conf`, Object.entries(config).map(([k, v]) => `${k}=${v}`).join('\n'));
     
-    const cmd = `${spiderFootCmd} -q -s ${domain} -m ${TARGET_MODULES} -o json`;
-    log('[SpiderFoot] Command:', cmd);
+    // Sanitize domain input to prevent command injection
+    const sanitizedDomain = domain.replace(/[^a-zA-Z0-9.-]/g, '');
+    if (sanitizedDomain !== domain) {
+        throw new Error(`Invalid domain format: ${domain}`);
+    }
+    
+    // Use array-based command execution to prevent injection
+    const args = ['-q', '-s', sanitizedDomain, '-m', TARGET_MODULES, '-o', 'json'];
+    log('[SpiderFoot] Executing with args:', args);
     
     const env = { ...process.env, SF_CONFDIR: confDir };
     const TIMEOUT_MS = parseInt(process.env.SPIDERFOOT_TIMEOUT_MS || '300000', 10);
     
     try {
         const start = Date.now();
-        const { stdout, stderr } = await execAsync(cmd, { env, timeout: TIMEOUT_MS, shell: '/bin/sh', maxBuffer: 20 * 1024 * 1024 });
+        const { stdout, stderr } = await execAsync(`${spiderFootCmd} ${args.map(arg => `'${arg}'`).join(' ')}`, { env, timeout: TIMEOUT_MS, shell: '/bin/sh', maxBuffer: 20 * 1024 * 1024 });
         if (stderr) log('[SpiderFoot-stderr]', stderr.slice(0, 400));
         log(`[SpiderFoot] Raw output size: ${stdout.length} bytes`);
 

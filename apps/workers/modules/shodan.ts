@@ -23,7 +23,9 @@ import { log } from '../core/logger.js';
 /* -------------------------------------------------------------------------- */
 
 const API_KEY = process.env.SHODAN_API_KEY ?? '';
-if (!API_KEY) throw new Error('SHODAN_API_KEY env var must be set');
+if (!API_KEY) {
+  throw new Error('SHODAN_API_KEY environment variable must be configured');
+}
 
 const RPS          = Number.parseInt(process.env.SHODAN_RPS ?? '1', 10);       // reqs / second
 const PAGE_LIMIT   = Number.parseInt(process.env.SHODAN_PAGE_LIMIT ?? '10', 10);

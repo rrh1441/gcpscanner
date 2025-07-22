@@ -289,8 +289,12 @@ async function executeZAPBaseline(target: string, assetType: string, scanId: str
 
   log(`Running ZAP baseline scan for ${target}`);
   
+  // Generate unique container name for tracking
+  const containerName = `zap-scan-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  
   const zapArgs = [
     'run', '--rm',
+    '--name', containerName,
     '-v', `${process.cwd()}/${ARTIFACTS_DIR}:/zap/wrk/:rw`,
     ZAP_DOCKER_IMAGE,
     'zap-baseline.py',
@@ -326,6 +330,12 @@ async function executeZAPBaseline(target: string, assetType: string, scanId: str
     zapProcess.on('exit', async (code, signal) => {
       log(`ZAP process exited with code ${code}, signal ${signal}`);
       
+      // Clean up Docker container after process exits
+      const cleanup = spawn('docker', ['rm', '-f', containerName], { stdio: 'ignore' });
+      cleanup.on('error', () => {
+        // Ignore cleanup errors - container might already be gone
+      });
+      
       // Check if output file was created
       if (existsSync(outputFile)) {
         try {
@@ -359,7 +369,17 @@ async function executeZAPBaseline(target: string, assetType: string, scanId: str
     });
 
     zapProcess.on('timeout', () => {
+      log(`ZAP scan timeout after ${ZAP_TIMEOUT_MS}ms, attempting container cleanup`);
+      
+      // Kill the ZAP process
       zapProcess.kill('SIGKILL');
+      
+      // Also attempt to stop and remove the Docker container
+      const cleanup = spawn('docker', ['stop', containerName], { stdio: 'ignore' });
+      cleanup.on('exit', () => {
+        spawn('docker', ['rm', '-f', containerName], { stdio: 'ignore' });
+      });
+      
       reject(new Error(`ZAP scan timeout after ${ZAP_TIMEOUT_MS}ms`));
     });
   });
