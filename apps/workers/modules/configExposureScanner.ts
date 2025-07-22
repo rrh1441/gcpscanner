@@ -86,6 +86,23 @@ const CONFIG_PATHS = [
   '/.gitconfig'
 ];
 
+// Entropy calculation for secret validation
+function calculateSecretEntropy(str: string): number {
+  const freq: Record<string, number> = {};
+  for (const char of str) {
+    freq[char] = (freq[char] || 0) + 1;
+  }
+  
+  let entropy = 0;
+  const length = str.length;
+  for (const count of Object.values(freq)) {
+    const probability = count / length;
+    entropy -= probability * Math.log2(probability);
+  }
+  
+  return entropy;
+}
+
 // Secret patterns to look for in files
 const SECRET_PATTERNS = [
   // API Keys
@@ -143,7 +160,27 @@ async function probeConfigFile(baseUrl: string, path: string): Promise<ConfigFil
       for (const pattern of SECRET_PATTERNS) {
         const matches = content.matchAll(pattern.regex);
         for (const match of matches) {
-          const value = match[2] || match[1] || match[0];
+          // Extract the actual value (last capture group or full match)
+          const value = match[match.length - 1] || match[0];
+          
+          // Skip placeholders and common false positives
+          if (/^(password|changeme|example|user|host|localhost|127\.0\.0\.1|root|admin|db_admin|postgres|secret|key|apikey|test|demo|your_key_here|your_secret_here|\[REDACTED\])$/i.test(value)) {
+            continue;
+          }
+          
+          // Skip if value is too short or lacks entropy for secrets
+          if (value.length < 8 || calculateSecretEntropy(value) < 2.5) {
+            continue;
+          }
+          
+          // Handle Supabase key severity adjustment
+          let adjustedSeverity = pattern.severity;
+          if (pattern.name.includes('Supabase') && /SUPABASE_ANON_KEY/i.test(match[0])) {
+            adjustedSeverity = 'INFO';
+          } else if (value.includes('service_role')) {
+            adjustedSeverity = 'CRITICAL';
+          }
+          
           // Truncate value for security
           const truncatedValue = value.length > 20 
             ? value.substring(0, 10) + '...' + value.substring(value.length - 5)
@@ -152,7 +189,7 @@ async function probeConfigFile(baseUrl: string, path: string): Promise<ConfigFil
           secrets.push({
             type: pattern.name,
             value: truncatedValue,
-            severity: pattern.severity
+            severity: adjustedSeverity
           });
         }
       }

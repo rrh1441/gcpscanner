@@ -226,19 +226,26 @@ function analyzeDomainSimilarity(typosquatDomain: string, originalDomain: string
     evidence.push(`Exact name match with different TLD: ${originalBase}.${originalTLD} vs ${typosquatBase}.${typosquatTLD}`);
   }
   
-  // 2. Character-level similarity (Levenshtein-like)
+  // 2. Character-level similarity (Levenshtein-like) - IMPROVED THRESHOLDS
   const editDistance = calculateEditDistance(originalBase, typosquatBase);
   const maxLength = Math.max(originalBase.length, typosquatBase.length);
   const charSimilarity = 1 - (editDistance / maxLength);
   
-  if (charSimilarity > 0.8) {
+  // Tightened thresholds to reduce false positives on short domains
+  if (charSimilarity > 0.85) {
     similarityScore += 70;
     emailPhishingRisk += 60;
     evidence.push(`High character similarity: ${Math.round(charSimilarity * 100)}% (${editDistance} character changes)`);
-  } else if (charSimilarity > 0.6) {
+  } else if (charSimilarity > 0.75 && editDistance <= 2) {
+    // Only flag moderate similarity if 2 or fewer character changes
     similarityScore += 40;
     emailPhishingRisk += 35;
     evidence.push(`Moderate character similarity: ${Math.round(charSimilarity * 100)}% (${editDistance} character changes)`);
+  } else if (charSimilarity > 0.6 && editDistance === 1 && originalBase.length >= 6) {
+    // Single character change only for longer domains (6+ chars)
+    similarityScore += 25;
+    emailPhishingRisk += 20;
+    evidence.push(`Single character change in longer domain: ${Math.round(charSimilarity * 100)}% (${editDistance} character changes)`);
   }
   
   // 3. Common typosquat patterns
@@ -567,28 +574,30 @@ async function compareContentWithAI(
   const safeOriginalSnippet = sanitizeForPrompt(originalSnippet, false);
   const safeTyposquatSnippet = sanitizeForPrompt(typosquatSnippet, false);
 
-  const prompt = `You are a cybersecurity expert analyzing typosquat domains for phishing threat potential. Compare these two domains:
+  const prompt = `You are a cybersecurity expert analyzing typosquat domains. Compare these domains for PHISHING THREAT RISK:
 
 ORIGINAL: ${safeDomain}
-Title: ${safeOriginalTitle}
-Description: ${safeOriginalSnippet}
+Title: "${safeOriginalTitle}"
+Description: "${safeOriginalSnippet}"
 
-TYPOSQUAT: ${safeTyposquat}
-Title: ${safeTyposquatTitle}
-Description: ${safeTyposquatSnippet}
+TYPOSQUAT: ${safeTyposquat}  
+Title: "${safeTyposquatTitle}"
+Description: "${safeTyposquatSnippet}"
 
-Key threat assessment priorities:
-1. ACTIVE IMPERSONATION: Is the typosquat copying/mimicking the original brand/content?
-2. PARKED THREAT: Generic/minimal content on a similar domain = phishing risk potential
-3. LEGITIMATE DIFFERENT BUSINESS: Established company with unique products/services
+CRITICAL: If the typosquat is a LEGITIMATE ESTABLISHED BUSINESS (real estate, law firm, restaurant, local business, professional services, etc.) with UNIQUE content/services, rate it 0-20 (LOW THREAT) regardless of domain similarity.
 
-Rate the PHISHING THREAT RISK considering:
-- Content impersonation (copying brand, services, design)
-- Generic/parked content that could be weaponized later  
-- Clear legitimate business operations that are genuinely different
-- Domain sale/auction pages (registrar sale pages, marketplace listings)
+Examples of LEGITIMATE BUSINESSES that should score LOW:
+- "Central Iowa Realtors" vs tech company = different industries = LOW THREAT
+- Local restaurants, law firms, medical practices = LEGITIMATE = LOW THREAT  
+- Established businesses with real addresses/phone numbers = LOW THREAT
 
-SPECIAL CASE: If this is a domain registrar sale page (contains phrases like "domain for sale", "buy this domain", "domain auction", GoDaddy/Sedo listings), note this in reasoning as "domain sale page"
+HIGH THREAT indicators:
+- Copying original brand content/design
+- Parked/minimal content with high domain similarity
+- Login forms targeting original's users
+- No legitimate business content
+
+IGNORE domain name similarity if typosquat has clear legitimate business operations in different industry.
 
 Respond with ONLY a JSON object:
 {
@@ -928,6 +937,11 @@ export async function runDnsTwist(job: { domain: string; scanId?: string }): Pro
           // Domain similarity analysis (FIRST - most important)
           const domainSimilarity = analyzeDomainSimilarity(entry.domain, job.domain);
           
+          // Extract base domains for optimization logic
+          const originalBase = job.domain.split('.')[0].toLowerCase();
+          const typosquatBase = entry.domain.split('.')[0].toLowerCase();
+          const editDistance = calculateEditDistance(originalBase, typosquatBase);
+          
           // Domain reality checks
           const [domainResolves, hasMxRecords, hasTlsCert, httpAnalysis] = await Promise.allSettled([
             checkDomainResolution(entry.domain),
@@ -1120,8 +1134,27 @@ export async function runDnsTwist(job: { domain: string; scanId?: string }): Pro
               score += 10;
               threatReasoning.push('Responds to HTTP requests');
               
-              // Get typosquat site content for AI comparison
-              typosquatSiteInfo = await getSiteSnippet(entry.domain);
+              // OPTIMIZATION: Skip expensive AI analysis for obvious low-risk cases
+              const skipAI = (
+                // Very low domain similarity + different registrar = likely different business
+                (threatSignals.domainSimilarity < 30 && !registrarMatch) ||
+                // Algorithmic domains with low similarity
+                (threatSignals.isAlgorithmic && threatSignals.domainSimilarity < 40) ||
+                // Already confirmed defensive registration
+                (registrarMatch && registrantMatch) ||
+                // Short domains with single char change (like "gibr" vs "cibr")
+                (originalBase.length <= 5 && editDistance === 1 && threatSignals.domainSimilarity < 80)
+              );
+              
+              if (skipAI) {
+                log(`[dnstwist] 🚀 Skipping AI analysis for obvious case: ${entry.domain} (similarity: ${threatSignals.domainSimilarity}%, algorithmic: ${threatSignals.isAlgorithmic}, registrar match: ${registrarMatch})`);
+                phishing = {
+                  score: threatSignals.domainSimilarity,
+                  evidence: [...threatSignals.similarityEvidence, 'Skipped AI analysis - obvious low-risk case']
+                };
+              } else {
+                // Get typosquat site content for AI comparison
+                typosquatSiteInfo = await getSiteSnippet(entry.domain);
               
               if (!originalSiteInfo.error && !typosquatSiteInfo.error && 
                   originalSiteInfo.snippet && typosquatSiteInfo.snippet) {
@@ -1162,8 +1195,38 @@ export async function runDnsTwist(job: { domain: string; scanId?: string }): Pro
                   evidence: [...threatSignals.similarityEvidence, `AI Analysis: ${aiContentAnalysis.reasoning}`]
                 };
               } else {
-                // Fallback to basic HTML analysis for sites without search results
-                const contentSimilarity = await analyzeWebPageForPhishing(entry.domain, job.domain);
+                // ENHANCED FALLBACK: Check for obvious legitimate business indicators
+                let isObviousLegitBusiness = false;
+                
+                // Quick legitimate business check using search snippet if available
+                if (typosquatSiteInfo.snippet || typosquatSiteInfo.title) {
+                  const content = (typosquatSiteInfo.snippet + ' ' + typosquatSiteInfo.title).toLowerCase();
+                  const businessIndicators = [
+                    'real estate', 'realty', 'realtor', 'properties', 'law firm', 'attorney', 'legal services',
+                    'restaurant', 'cafe', 'diner', 'medical', 'dental', 'clinic', 'hospital', 'doctor',
+                    'insurance', 'financial', 'accounting', 'consulting', 'contractor', 'construction',
+                    'auto repair', 'mechanic', 'salon', 'spa', 'veterinary', 'church', 'school',
+                    'located in', 'serving', 'call us', 'contact us', 'phone:', 'address:', 'hours:'
+                  ];
+                  
+                  const businessMatches = businessIndicators.filter(indicator => content.includes(indicator));
+                  if (businessMatches.length >= 2) {
+                    isObviousLegitBusiness = true;
+                    log(`[dnstwist] 📋 Obvious legitimate business detected: ${entry.domain} (${businessMatches.join(', ')})`);
+                  }
+                }
+                
+                if (isObviousLegitBusiness && threatSignals.domainSimilarity < 70) {
+                  // Override for obvious legitimate business with low similarity
+                  score = Math.max(score - 40, 15);
+                  threatReasoning.push('🏢 Obvious legitimate business in different industry - low threat');
+                  phishing = {
+                    score: Math.max(threatSignals.domainSimilarity - 30, 10),
+                    evidence: [...threatSignals.similarityEvidence, 'Legitimate business with professional content']
+                  };
+                } else {
+                  // Fallback to basic HTML analysis for sites without search results
+                  const contentSimilarity = await analyzeWebPageForPhishing(entry.domain, job.domain);
                 
                 // Check if we got readable content
                 const html = await fetchWithFallback(entry.domain);
@@ -1201,6 +1264,8 @@ export async function runDnsTwist(job: { domain: string; scanId?: string }): Pro
                     evidence: threatSignals.similarityEvidence
                   };
                 }
+                }
+              }
               }
             } else if (threatSignals.resolves && threatSignals.domainSimilarity > 40) {
               // Domain resolves but no HTTP response + similar name = suspicious
@@ -1226,8 +1291,9 @@ export async function runDnsTwist(job: { domain: string; scanId?: string }): Pro
               score = Math.max(score - 20, 15);
               threatReasoning.push('Same registrar with privacy protection (likely defensive)');
             } else if (!registrarMatch && originWhois && typoWhois && !typoWhois.error && originWhois.registrar && typoWhois.registrar) {
-              score += 30;
-              threatReasoning.push('Different registrar and registrant - potential threat');
+              // Different registrars = potential red flag (defensive registrations would use same registrar)
+              score += 25; // Moderate penalty - different registrars are suspicious
+              threatReasoning.push('Different registrar - potential threat (defensive registrations typically use same registrar)');
             } else if ((originWhois && !typoWhois) || (typoWhois?.error) || (!originWhois?.registrar || !typoWhois?.registrar)) {
               score += 10;
               threatReasoning.push('WHOIS verification needed - unable to confirm registrar ownership');
@@ -1284,25 +1350,31 @@ export async function runDnsTwist(job: { domain: string; scanId?: string }): Pro
               !r.includes('for sale')
             );
             
+            // IMPROVED THREAT CLASSIFICATION - Higher thresholds to reduce false positives
             if (isLegitimateBusinessByAI) {
               threatClass = 'MONITOR';
               severity = 'INFO';
               log(`[dnstwist] 🤖 AI OVERRIDE: ${entry.domain} marked as INFO severity - legitimate different business`);
-            } else if (score >= 80 || threatSignals.httpContent.hasLoginForm) {
+            } else if (score >= 100 || threatSignals.httpContent.hasLoginForm) {
+              // CRITICAL only for very high scores or login forms
               threatClass = 'TAKEDOWN';
               severity = 'CRITICAL';
-            } else if (score >= 50) {
+            } else if (score >= 70) {
+              // HIGH threshold raised from 50 to 70
               threatClass = 'TAKEDOWN';
               severity = 'HIGH';
-            } else if (score >= 30) {
+            } else if (score >= 45) {
+              // MEDIUM threshold raised from 30 to 45
               threatClass = 'INVESTIGATE';
               severity = 'MEDIUM';
-            } else if (score >= 20) {
+            } else if (score >= 25) {
+              // LOW threshold raised from 20 to 25
               threatClass = 'MONITOR';
               severity = 'LOW';
             } else {
+              // INFO for very low scores
               threatClass = 'MONITOR';
-              severity = 'LOW';
+              severity = 'INFO';
             }
           }
 
