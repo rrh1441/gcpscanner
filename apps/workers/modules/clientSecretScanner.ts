@@ -17,13 +17,272 @@ interface WebAsset { url: string; content: string; }
 interface SecretPattern {
   name:      string;
   regex:     RegExp;
-  severity:  'CRITICAL' | 'HIGH' | 'MEDIUM';
+  severity:  'CRITICAL' | 'HIGH' | 'MEDIUM' | 'INFO';
   verify?:  (key: string) => Promise<boolean>;   // optional future hook
 }
 type SecretHit = { pattern: SecretPattern; match: string; context?: string };
 
 // LLM validation cache to avoid redundant checks
 const llmValidationCache = new Map<string, boolean>();
+
+// ------------------------------------------------------------------
+// SecretSanity: Deterministic triage for high-entropy tokens
+// ------------------------------------------------------------------
+
+interface TriageFinding {
+  id: number;
+  sample: string;
+  asset_url: string;
+  around: string;
+}
+
+interface TriageResult {
+  id: number;
+  decision: 'REAL_SECRET' | 'FALSE_POSITIVE';
+  reason: string;
+}
+
+const VENDOR_SPECIFIC_PATTERNS = [
+  { pattern: /^sk_live_[0-9a-z]{24}/i, name: 'Stripe Live Key' },
+  { pattern: /^(A3T|AKIA|ASIA)[A-Z0-9]{16}/, name: 'AWS Access Key' },
+  { pattern: /^AIza[0-9A-Za-z-_]{35}/, name: 'Google API Key' },
+  { pattern: /^eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}$/, name: 'JWT Token' },
+  { pattern: /(postgres|mysql|mongodb):\/\/[^@]+@/, name: 'Database URL' },
+  { pattern: /^pk\.[A-Za-z0-9]{60,}/, name: 'Mapbox Token' },
+  { pattern: /^dd[0-9a-f]{32}/i, name: 'Datadog API Key' },
+  { pattern: /^[a-f0-9]{32}(?:-dsn)?\.algolia\.net/i, name: 'Algolia Key' },
+  { pattern: /^NRAA-[0-9a-f]{27}/i, name: 'New Relic License' },
+  { pattern: /^pdt[A-Z0-9]{30,32}/, name: 'PagerDuty API Key' },
+  { pattern: /^sk_test_[0-9a-zA-Z]{24}/, name: 'Stripe Test Key' },
+  { pattern: /^xoxb-[0-9]{11,13}-[0-9]{11,13}-[A-Za-z0-9]{24}/, name: 'Slack Bot Token' },
+  { pattern: /^ghp_[A-Za-z0-9]{36}/, name: 'GitHub Personal Access Token' }
+];
+
+const SECRET_CONTEXT_PATTERNS = [
+  /\b(apikey|api_key|api-key|secret|token|auth_token|access_token|bearer|authorization|password|pwd|pass|credential|key)\s*[:=]\s*['"]*$/i,
+  /\b(Authorization|Bearer)\s*:\s*['"]*$/i,
+  /\bkey\s*[:=]\s*['"]*$/i,
+  /\b(client_secret|client_id|private_key|secret_key)\s*[:=]\s*['"]*$/i
+];
+
+const BENIGN_CONTEXT_PATTERNS = [
+  /\b(chunkIds|ids|manifest|chunks|assets|modules|vendors)\s*[:=\[]/i,
+  /\/\*[\s\S]*?\*\//,
+  /\/\/.*$/m,
+  /\b(webpack|chunk|hash|nonce|etag|filename|build)\b/i,
+  /\.(js|css|map|json|html|svg)['"\`]/i,
+  /\b(style|class|className|data-|aria-)\w*/i
+];
+
+function calculateShannonEntropy(str: string): number {
+  const freq: Record<string, number> = {};
+  for (const char of str) {
+    freq[char] = (freq[char] || 0) + 1;
+  }
+  
+  let entropy = 0;
+  const length = str.length;
+  for (const count of Object.values(freq)) {
+    const probability = count / length;
+    entropy -= probability * Math.log2(probability);
+  }
+  
+  return entropy;
+}
+
+function isHexString(str: string): boolean {
+  return /^[0-9a-fA-F]+$/.test(str);
+}
+
+function isBase64Url(str: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(str) && !/[+/=]/.test(str);
+}
+
+function checkVendorSpecificPatterns(sample: string): { isMatch: boolean; vendor?: string } {
+  for (const { pattern, name } of VENDOR_SPECIFIC_PATTERNS) {
+    if (pattern.test(sample)) {
+      return { isMatch: true, vendor: name };
+    }
+  }
+  return { isMatch: false };
+}
+
+function checkContextInspection(sample: string, around: string): { isSecret: boolean; reason?: string } {
+  for (const pattern of SECRET_CONTEXT_PATTERNS) {
+    const beforeSample = around.slice(0, around.indexOf(sample));
+    if (pattern.test(beforeSample)) {
+      return { isSecret: true, reason: 'assigned to secret-like variable' };
+    }
+  }
+  
+  for (const pattern of BENIGN_CONTEXT_PATTERNS) {
+    if (pattern.test(around)) {
+      return { isSecret: false, reason: 'appears in benign context' };
+    }
+  }
+  
+  return { isSecret: false };
+}
+
+function checkStructuralHeuristics(sample: string, around: string): { isBenign: boolean; reason?: string } {
+  if ((sample.length === 32 || sample.length === 40) && isHexString(sample)) {
+    if (around.match(/\b(chunk|webpack|hash|nonce|etag|filename)\b/i)) {
+      return { isBenign: true, reason: `${sample.length}-char hex in webpack context` };
+    }
+  }
+  
+  if ((sample.length === 22 || sample.length === 43) && isBase64Url(sample)) {
+    if (around.match(/\b(chunk|webpack|hash|nonce|etag|filename)\b/i)) {
+      return { isBenign: true, reason: `${sample.length}-char base64-URL in build context` };
+    }
+  }
+  
+  return { isBenign: false };
+}
+
+function isInCSSOrHTMLContext(around: string): boolean {
+  const context = around.toLowerCase();
+  
+  if (context.includes('<style') || context.includes('</style>')) return true;
+  if (context.match(/\b(class|classname|style)\s*=\s*['"]/)) return true;
+  if (context.match(/\bdata-[\w-]+\s*=\s*['"]/)) return true;
+  if (context.match(/\baria-[\w-]+\s*=\s*['"]/)) return true;
+  if (context.match(/--[\w-]+\s*:/)) return true;
+  
+  return false;
+}
+
+async function llmFallbackForTriage(sample: string, around: string): Promise<boolean> {
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      log('[SecretSanity] No OpenAI API key available for LLM fallback');
+      return false;
+    }
+    
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    
+    const truncatedSample = sample.length > 10 ? 
+      `${sample.slice(0, 6)}…${sample.slice(-4)}` : sample;
+    
+    const truncatedContext = around.length > 150 ? 
+      around.slice(0, 150) + '…' : around;
+    
+    const prompt = `Is this likely a production credential? Token: "${truncatedSample}" Context: "${truncatedContext}" Respond true or false only.`;
+    
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0,
+      max_tokens: 10,
+    });
+    
+    const answer = response.choices[0]?.message?.content?.toLowerCase().trim();
+    return answer === 'true';
+    
+  } catch (error) {
+    log('[SecretSanity] LLM fallback failed:', (error as Error).message);
+    return false;
+  }
+}
+
+async function triageFindings(findings: TriageFinding[]): Promise<TriageResult[]> {
+  const results: TriageResult[] = [];
+  
+  log(`[SecretSanity] Processing ${findings.length} findings`);
+  
+  for (const finding of findings) {
+    const { id, sample, around } = finding;
+    
+    const vendorCheck = checkVendorSpecificPatterns(sample);
+    if (vendorCheck.isMatch) {
+      results.push({
+        id,
+        decision: 'REAL_SECRET',
+        reason: `Matches ${vendorCheck.vendor} pattern`
+      });
+      continue;
+    }
+    
+    const contextCheck = checkContextInspection(sample, around);
+    if (contextCheck.isSecret) {
+      results.push({
+        id,
+        decision: 'REAL_SECRET',
+        reason: contextCheck.reason || 'Secret context detected'
+      });
+      continue;
+    }
+    
+    const structuralCheck = checkStructuralHeuristics(sample, around);
+    if (structuralCheck.isBenign) {
+      results.push({
+        id,
+        decision: 'FALSE_POSITIVE',
+        reason: structuralCheck.reason || 'Structural heuristic match'
+      });
+      continue;
+    }
+    
+    if (isInCSSOrHTMLContext(around)) {
+      results.push({
+        id,
+        decision: 'FALSE_POSITIVE',
+        reason: 'CSS/HTML context detected'
+      });
+      continue;
+    }
+    
+    if (sample.length < 24 || calculateShannonEntropy(sample) < 3.5) {
+      results.push({
+        id,
+        decision: 'FALSE_POSITIVE',
+        reason: 'Low entropy or short length'
+      });
+      continue;
+    }
+    
+    const llmResult = await llmFallbackForTriage(sample, around);
+    results.push({
+      id,
+      decision: llmResult ? 'REAL_SECRET' : 'FALSE_POSITIVE',
+      reason: llmResult ? 'LLM identified as credential' : 'LLM identified as benign'
+    });
+  }
+  
+  const realSecrets = results.filter(r => r.decision === 'REAL_SECRET').length;
+  const falsePositives = results.filter(r => r.decision === 'FALSE_POSITIVE').length;
+  
+  log(`[SecretSanity] Triage complete: ${realSecrets} real secrets, ${falsePositives} false positives`);
+  
+  return results;
+}
+
+function generateScannerImprovementNote(results: TriageResult[]): string {
+  const falsePositiveReasons = results
+    .filter(r => r.decision === 'FALSE_POSITIVE')
+    .map(r => r.reason);
+  
+  const commonPatterns = falsePositiveReasons
+    .reduce((acc, reason) => {
+      acc[reason] = (acc[reason] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+  
+  const topPatterns = Object.entries(commonPatterns)
+    .sort(([,a], [,b]) => b - a)
+    .slice(0, 3)
+    .map(([pattern, count]) => `${pattern} (${count} occurrences)`);
+  
+  return `Scanner Improvement Note: Most common false positives were ${topPatterns.join(', ')}. ` +
+    `Consider adding specific filters for these patterns to reduce noise in future scans.`;
+}
+
+// Export function for external use
+export async function runSecretSanityTriage(findings: TriageFinding[]): Promise<{results: TriageResult[]; improvementNote: string}> {
+  const results = await triageFindings(findings);
+  const improvementNote = generateScannerImprovementNote(results);
+  return { results, improvementNote };
+}
 
 // ------------------------------------------------------------------
 // 1. Curated high-precision built-in patterns
@@ -91,7 +350,7 @@ function loadPluginPatterns(): SecretPattern[] {
         return [{
           name: e.name,
           regex: new RegExp(e.regex, 'gi'),
-          severity: (e.severity ?? 'HIGH').toUpperCase() as 'CRITICAL'|'HIGH'|'MEDIUM'
+          severity: (e.severity ?? 'HIGH').toUpperCase() as 'CRITICAL'|'HIGH'|'MEDIUM'|'INFO'
         } satisfies SecretPattern];
       } catch { 
         log(`[clientSecretScanner] ⚠️  invalid regex in YAML: ${e.name}`); 
@@ -188,15 +447,29 @@ function findSecrets(content: string): SecretHit[] {
   const hits: SecretHit[] = [];
   for (const pattern of getSecretPatterns()) {
     for (const m of content.matchAll(pattern.regex)) {
-      const match = m[1] || m[0];
+      // Extract the actual value (last capture group or full match)
+      const value = m[m.length - 1] || m[0];
       const matchIndex = m.index || 0;
       
-      // Skip if this looks like a CSS variable or is in CSS context
-      if (isCSSVariable(match) || isInCSSContext(content, matchIndex)) {
+      // Skip placeholders and common false positives
+      if (/^(password|changeme|example|user|host|localhost|127\.0\.0\.1|root|admin|db_admin|postgres)$/i.test(value)) {
         continue;
       }
       
-      hits.push({ pattern, match });
+      // Skip if this looks like a CSS variable or is in CSS context
+      if (isCSSVariable(value) || isInCSSContext(content, matchIndex)) {
+        continue;
+      }
+      
+      // Handle Supabase key severity adjustment
+      let adjustedPattern = pattern;
+      if (/SUPABASE_ANON_KEY/i.test(m[0])) {
+        adjustedPattern = { ...pattern, severity: 'INFO' };
+      } else if (value.includes('service_role')) {
+        adjustedPattern = { ...pattern, severity: 'CRITICAL' };
+      }
+      
+      hits.push({ pattern: adjustedPattern, match: value });
     }
   }
   return hits;
@@ -337,8 +610,8 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
     for (const asset of assets) {
       let hits = findSecrets(asset.content);
 
-      // entropy heuristic – optional low-severity catch-all
-      // Only match tokens that look like actual secrets (base64, hex, alphanumeric with special chars)
+      // entropy heuristic – collect high-entropy tokens for SecretSanity triage
+      const entropyTokens: TriageFinding[] = [];
       for (const m of asset.content.matchAll(/\b[A-Za-z0-9\/+=_]{32,}[A-Za-z0-9\/+=_]*\b/g)) {
         const t = m[0];
         const matchIndex = m.index || 0;
@@ -360,13 +633,41 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
         }
         
         if (looksRandom(t)) {
-          const context = asset.content.slice(Math.max(0, matchIndex - 50), Math.min(asset.content.length, matchIndex + 50));
-          hits.push({
-            pattern: { name: 'High-entropy token - potential secret', regex:/./, severity:'MEDIUM' },
-            match: t,
-            context: context.replace(/\s+/g, ' ').trim()
+          const context = asset.content.slice(Math.max(0, matchIndex - 100), Math.min(asset.content.length, matchIndex + 100));
+          entropyTokens.push({
+            id: entropyTokens.length + 718, // Starting from example ID 718
+            sample: t,
+            asset_url: asset.url,
+            around: context.replace(/\s+/g, ' ').trim()
           });
         }
+      }
+      
+      // Triage entropy tokens with SecretSanity
+      if (entropyTokens.length > 0) {
+        log(`[clientSecretScanner] Triaging ${entropyTokens.length} high-entropy tokens with SecretSanity`);
+        const triageResults = await triageFindings(entropyTokens);
+        
+        // Only add tokens that passed triage as real secrets
+        for (const result of triageResults) {
+          if (result.decision === 'REAL_SECRET') {
+            const token = entropyTokens.find(t => t.id === result.id);
+            if (token) {
+              hits.push({
+                pattern: { name: 'High-entropy token - potential secret', regex:/./, severity:'MEDIUM' },
+                match: token.sample,
+                context: token.around
+              });
+            }
+          }
+        }
+        
+        // Log improvement note
+        const improvementNote = generateScannerImprovementNote(triageResults);
+        log(`[SecretSanity] ${improvementNote}`);
+        
+        const realSecrets = triageResults.filter(r => r.decision === 'REAL_SECRET').length;
+        log(`[SecretSanity] Reduced ${entropyTokens.length} entropy tokens to ${realSecrets} likely secrets (${Math.round((1 - realSecrets/entropyTokens.length) * 100)}% reduction)`);
       }
 
       if (hits.length > 0) {
@@ -374,33 +675,13 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
       }
     }
 
-    // Batch validate all entropy-based candidates with LLM
-    const entropyBasedCandidates = allCandidates.flatMap(({ hits }) => 
-      hits.filter(h => h.pattern.name.includes('High-entropy')).map(h => ({ match: h.match, context: h.context || '' }))
-    );
-    
-    let llmValidationMap = new Map<string, boolean>();
-    if (entropyBasedCandidates.length > 0) {
-      log(`[clientSecretScanner] validating ${entropyBasedCandidates.length} entropy-based candidates with LLM`);
-      llmValidationMap = await validateSecretsWithLLM(entropyBasedCandidates);
-    }
-
-    // Process validated results
+    // Process results (SecretSanity has already filtered entropy-based candidates)
     for (const { asset, hits } of allCandidates) {
-      // Filter hits based on LLM validation for entropy-based detections
-      const validatedHits = hits.filter(hit => {
-        if (hit.pattern.name.includes('High-entropy')) {
-          return llmValidationMap.get(hit.match) || false;
-        }
-        // Keep all regex-based detections (they're already high-precision)
-        return true;
-      });
-
-      if (!validatedHits.length) continue;
-      log(`[clientSecretScanner] ${validatedHits.length} validated hit(s) → ${asset.url}`);
+      if (!hits.length) continue;
+      log(`[clientSecretScanner] ${hits.length} validated hit(s) → ${asset.url}`);
       let assetHits = 0;
 
-      for (const { pattern, match } of validatedHits) {
+      for (const { pattern, match } of hits) {
         if (++assetHits > 25) { log('  ↪ noisy asset, truncated'); break; }
         total++;
 
