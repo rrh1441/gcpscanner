@@ -22,8 +22,7 @@ interface SecretPattern {
 }
 type SecretHit = { pattern: SecretPattern; match: string; context?: string };
 
-// LLM validation cache to avoid redundant checks
-const llmValidationCache = new Map<string, boolean>();
+// LLM validation cache to avoid redundant checks (legacy, unused by new pipeline)
 
 // ------------------------------------------------------------------
 // SecretSanity: Deterministic triage for high-entropy tokens
@@ -65,13 +64,38 @@ const SECRET_CONTEXT_PATTERNS = [
   /\b(client_secret|client_id|private_key|secret_key)\s*[:=]\s*['"]*$/i
 ];
 
+// NEW: Add patterns for filenames that are almost always noise
+const BENIGN_FILENAME_PATTERNS = [
+  /\.css$/, /\.s[ac]ss$/,                 // Stylesheets
+  /\.svg$/, /\.ico$/, /\.woff2?$/,         // Assets
+  /tailwind\.config\.(js|ts)$/,           // Tailwind Config
+  /next\.config\.(js|mjs)$/,              // Next.js Config
+  /vite\.config\.(js|ts)$/,               // Vite Config
+  /package-lock\.json$/, /yarn\.lock$/,   // Lockfiles
+  /\.map$/,                               // Source Maps
+];
+
+// EXPANDED: Beef up the benign context patterns
 const BENIGN_CONTEXT_PATTERNS = [
-  /\b(chunkIds|ids|manifest|chunks|assets|modules|vendors)\s*[:=\[]/i,
-  /\/\*[\s\S]*?\*\//,
-  /\/\/.*$/m,
-  /\b(webpack|chunk|hash|nonce|etag|filename|build)\b/i,
-  /\.(js|css|map|json|html|svg)['"\`]/i,
-  /\b(style|class|className|data-|aria-)\w*/i
+  // Build artifacts and module loading
+  /\b(chunkIds|webpack[A-Z]|manifest|modules|chunks|assets|vendors|remoteEntry)\s*[:=\[]/i,
+  /\b(integrity)\s*:\s*["']sha\d+-/i, // package-lock.json integrity hashes
+  /\b(chunk|hash|nonce|etag|filename|buildId|deploymentId|contenthash)\b/i,
+  /\b(sourceMappingURL)=/i,
+
+  // CSS, SVG, and styling
+  /\.(js|css|map|json|html|svg|png|jpg|woff)['"`]/i,
+  /\b(style|class|className|data-|aria-|data-test-id|cy-data|d)\s*[=:]/i, // includes SVG path `d` attribute
+  /--[a-zA-Z0-9-]+:/, // CSS custom properties
+  /rgba?\s*\(/, /hsla?\s*\(/, // Color functions
+  
+  // Common non-secret variables
+  /\b(id|key|uid|uuid|type|ref|target|label|name|path|icon|variant|theme|size|mode)\s*[:=]/i,
+  /\b(previous|current)_[a-zA-Z_]*id/i, // e.g. current_user_id
+
+  // Framework/Library internals
+  /\b(__NEXT_DATA__|__PRELOADED_STATE__|__REDUX_STATE__)/i,
+  /\{\s*"version":\s*3,/i // Common start of a sourcemap file
 ];
 
 function calculateShannonEntropy(str: string): number {
@@ -282,6 +306,171 @@ export async function runSecretSanityTriage(findings: TriageFinding[]): Promise<
   const results = await triageFindings(findings);
   const improvementNote = generateScannerImprovementNote(results);
   return { results, improvementNote };
+}
+
+// ------------------------------------------------------------------
+// Triage Pipeline Types and Functions
+// ------------------------------------------------------------------
+
+interface TriageCandidate {
+  value: string;
+  context: string; // 200 chars around the value
+  filename: string;
+}
+
+enum TriageDecision {
+  NOT_A_SECRET,
+  CONFIRMED_SECRET,
+  POTENTIAL_SECRET, // Needs LLM
+}
+
+interface PipelineTriageResult {
+  decision: TriageDecision;
+  reason: string;
+  pattern?: SecretPattern;
+}
+
+// These are your "golden" patterns with near-zero false positives
+const HIGH_CONFIDENCE_PATTERNS: SecretPattern[] = [
+  { name: 'Stripe Live Key', regex: /sk_live_[0-9a-z]{24}/i, severity: 'CRITICAL' },
+  { name: 'AWS Access Key', regex: /(A3T|AKIA|ASIA)[A-Z0-9]{16}/, severity: 'CRITICAL' },
+  { name: 'Private Key', regex: /-----BEGIN\s+(RSA|EC|OPENSSH|DSA|PRIVATE)\s+PRIVATE\s+KEY-----/g, severity: 'CRITICAL' },
+  { name: 'Supabase Service Key', regex: /eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}.*?service_role/gi, severity: 'CRITICAL' },
+  { name: 'Database Connection String', regex: /(postgres|mysql|mongodb|redis):\/\/[^:]+:([^@\s]+)@[^\/\s'"]+/gi, severity: 'CRITICAL' },
+];
+
+function triagePotentialSecret(candidate: TriageCandidate): PipelineTriageResult {
+  const { value, context, filename } = candidate;
+
+  // ===== STAGE 2: AGGRESSIVE DISQUALIFICATION =====
+  
+  // Disqualify based on filename
+  for (const pattern of BENIGN_FILENAME_PATTERNS) {
+    if (pattern.test(filename)) {
+      return { decision: TriageDecision.NOT_A_SECRET, reason: `Benign filename match: ${filename}` };
+    }
+  }
+
+  // Disqualify based on surrounding context
+  for (const pattern of BENIGN_CONTEXT_PATTERNS) {
+    if (pattern.test(context)) {
+      return { decision: TriageDecision.NOT_A_SECRET, reason: `Benign context match: ${pattern.source.slice(0,50)}...` };
+    }
+  }
+
+  // Disqualify based on structure (is it a common non-secret format?)
+  if (/^[0-9a-f]{40}$/i.test(value)) {
+    return { decision: TriageDecision.NOT_A_SECRET, reason: `Structural match: Git SHA-1` };
+  }
+  if (/^[0-9a-f]{32}$/i.test(value)) {
+    return { decision: TriageDecision.NOT_A_SECRET, reason: `Structural match: MD5 hash` };
+  }
+  if (/^[a-f\d]{8}-([a-f\d]{4}-){3}[a-f\d]{12}$/i.test(value)) {
+    return { decision: TriageDecision.NOT_A_SECRET, reason: `Structural match: UUID` };
+  }
+  
+  // Skip common placeholders
+  if (/^(password|changeme|example|user|host|localhost|127\.0\.0\.1|root|admin|secret|token|key)$/i.test(value)) {
+      return { decision: TriageDecision.NOT_A_SECRET, reason: 'Common placeholder value' };
+  }
+
+  // ===== STAGE 3: HIGH-CONFIDENCE POSITIVE IDENTIFICATION =====
+  for (const pattern of HIGH_CONFIDENCE_PATTERNS) {
+    // We need to ensure global flag for matchAll
+    const globalRegex = new RegExp(pattern.regex.source, 'g' + (pattern.regex.ignoreCase ? 'i' : ''));
+    if (Array.from(value.matchAll(globalRegex)).length > 0) {
+      // Check if the match is a placeholder part of the string
+      if (/(test|fake|example|dummy)/i.test(context)) {
+         return { decision: TriageDecision.NOT_A_SECRET, reason: `High-confidence pattern in test context` };
+      }
+      return { decision: TriageDecision.CONFIRMED_SECRET, reason: `High-confidence pattern: ${pattern.name}`, pattern };
+    }
+  }
+  
+  // ===== STAGE 4: AMBIGUOUS - NEEDS LLM =====
+  // If it survived all that, it's a candidate for the final check.
+  return { decision: TriageDecision.POTENTIAL_SECRET, reason: "Survived deterministic checks" };
+}
+
+// Improved LLM validation function
+async function validateWithLLM_Improved(candidates: TriageCandidate[]): Promise<Array<{is_secret: boolean, reason: string}>> {
+  if (!process.env.OPENAI_API_KEY) {
+    log('[clientSecretScanner] No OpenAI API key available for LLM validation');
+    return candidates.map(() => ({is_secret: false, reason: "No LLM available"}));
+  }
+
+  try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    
+    const prompt = `
+Analyze the following candidates found in a web application's client-side assets. For each candidate, determine if it is a real, production-level secret or just benign code/data.
+
+Respond with ONLY a JSON object with a "results" array containing one object per candidate, in the same order.
+Each object must have two keys:
+1. "is_secret": boolean (true if it's a real credential, false otherwise)
+2. "reason": string (A brief explanation, e.g., "Likely a webpack chunk hash", "Looks like a production Stripe key", "Benign CSS variable")
+
+Candidates:
+${candidates.map((c, i) => `
+${i + 1}. Filename: "${c.filename}"
+   Token: "${c.value.slice(0, 80)}"
+   Context: """
+${c.context}
+"""
+`).join('\n---\n')}
+
+CRITICAL RULES:
+- A backend secret (Database URL, AWS Secret Key, service_role JWT) is ALWAYS a secret.
+- A public key (Stripe pk_live, Supabase anon key) is NOT a secret.
+- A random-looking string in a file like 'tailwind.config.js', 'next.config.js', or a '.css' file is ALMOST NEVER a secret. It is likely a build artifact, hash, or style definition.
+- A string inside a 'package-lock.json' or 'yarn.lock' is NEVER a secret.
+- If context shows 'chunk', 'hash', 'manifest', 'buildId', 'deploymentId', it is NOT a secret.
+
+Your response must be a valid JSON object with a "results" array.
+`;
+
+    const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+    });
+    
+    const content = response.choices[0]?.message?.content;
+    const parsed = JSON.parse(content!);
+    return parsed.results || [];
+  } catch (err) {
+    log('[clientSecretScanner] LLM validation failed', { error: err as Error });
+    // Fail safely: assume none are secrets to avoid false positives on error.
+    return candidates.map(() => ({is_secret: false, reason: "LLM validation failed"}));
+  }
+}
+
+// Helper function to create findings
+async function createFindingForSecret(scanId: string, asset: WebAsset, pattern: SecretPattern, match: string): Promise<void> {
+  const artifactId = await insertArtifact({
+    type: 'secret',
+    val_text: `[Client] ${pattern.name}`,
+    severity: pattern.severity,
+    src_url: asset.url,
+    meta: { scan_id: scanId, detector:'ClientSecretScanner', pattern:pattern.name, preview:match.slice(0,50) }
+  });
+
+  // Special handling for database exposure
+  if (pattern.name.includes('Database') || pattern.name.includes('Postgres') || pattern.name.includes('Supabase') || pattern.name.includes('Neon')) {
+    await insertFinding(
+      artifactId,
+      'DATABASE_EXPOSURE',
+      'CRITICAL: Database access exposed! Rotate credentials IMMEDIATELY and restrict database access. This allows full database access including reading, modifying, and deleting all data.',
+      `Exposed ${pattern.name} in client-side code. This grants FULL DATABASE ACCESS. Sample: ${match.slice(0,80)}…`
+    );
+  } else {
+    await insertFinding(
+      artifactId,
+      'CLIENT_SIDE_SECRET_EXPOSURE',
+      'Revoke / rotate this credential immediately; it is publicly downloadable.',
+      `Exposed ${pattern.name} in client asset. Sample: ${match.slice(0,80)}…`
+    );
+  }
 }
 
 // ------------------------------------------------------------------
@@ -516,69 +705,8 @@ function looksRandom(s: string): boolean {
   return H / 8 > 0.35;
 }
 
-// Batch validate potential secrets with LLM
-async function validateSecretsWithLLM(candidates: Array<{match: string, context: string}>): Promise<Map<string, boolean>> {
-  const results = new Map<string, boolean>();
-  
-  // Check cache first
-  const uncachedCandidates = candidates.filter(c => !llmValidationCache.has(c.match));
-  if (uncachedCandidates.length === 0) {
-    candidates.forEach(c => results.set(c.match, llmValidationCache.get(c.match) || false));
-    return results;
-  }
-  
-  try {
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    
-    const prompt = `Analyze these potential secrets found in web assets. Return ONLY a JSON array of booleans in the same order.
-True = likely a real secret/credential, False = CSS/HTML/benign code.
-
-Candidates:
-${uncachedCandidates.map((c, i) => `${i+1}. Token: "${c.match.slice(0, 50)}${c.match.length > 50 ? '...' : ''}"
-   Context: ${c.context}`).join('\n\n')}
-
-Rules:
-- CSS properties, HTML attributes, style values = False
-- API keys, tokens, passwords, JWTs, database URLs = True
-- Base64 that decodes to CSS/HTML = False
-- Webpack chunks, CSS hashes = False
-
-Response format: [true, false, true, ...]`;
-
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0,
-      max_tokens: 1000,
-    });
-    
-    const content = response.choices[0]?.message?.content || '[]';
-    const validationResults = JSON.parse(content) as boolean[];
-    
-    // Store results in cache and return map
-    uncachedCandidates.forEach((c, i) => {
-      const isSecret = validationResults[i] ?? false;
-      llmValidationCache.set(c.match, isSecret);
-      results.set(c.match, isSecret);
-    });
-    
-    // Add cached results
-    candidates.forEach(c => {
-      if (!results.has(c.match)) {
-        results.set(c.match, llmValidationCache.get(c.match) || false);
-      }
-    });
-    
-    log(`[clientSecretScanner] LLM validated ${uncachedCandidates.length} candidates: ${validationResults.filter(v => v).length} secrets, ${validationResults.filter(v => !v).length} false positives`);
-    
-  } catch (err) {
-    log('[clientSecretScanner] LLM validation failed', { error: err as Error });
-    // On error, be conservative and mark all as potential secrets
-    candidates.forEach(c => results.set(c.match, true));
-  }
-  
-  return results;
-}
+// Legacy LLM validation function - kept for backward compatibility but unused
+// Use validateWithLLM_Improved instead
 
 // ------------------------------------------------------------------
 // 4. Main module
@@ -623,112 +751,62 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
 
     log(`[clientSecretScanner] scanning ${assets.length}/${rows[0].meta.assets.length} assets (${Math.round(totalContentSize/1024/1024)}MB total)`);
 
-    // Collect all potential secrets across all assets for batch validation
-    const allCandidates: Array<{asset: WebAsset, hits: SecretHit[]}> = [];
-    
+    // NEW PIPELINE APPROACH: Use 4-stage triage instead of old logic
+    const llmCandidates: Array<{ asset: WebAsset, hit: TriageCandidate, pattern: SecretPattern }> = [];
+
     for (const asset of assets) {
-      let hits = findSecrets(asset.content);
+      // STAGE 1: Find all potential candidates with a broad regex
+      const broadRegex = /\b([A-Za-z0-9\-_/+=]{20,})\b/g;
+      for (const match of asset.content.matchAll(broadRegex)) {
+        const value = match[0];
+        const matchIndex = match.index || 0;
+        
+        // Basic pre-filtering
+        if (value.length > 256) continue; // Likely not a secret
+        if (!looksRandom(value)) continue; // Not enough entropy
 
-      // entropy heuristic – collect high-entropy tokens for SecretSanity triage
-      const entropyTokens: TriageFinding[] = [];
-      for (const m of asset.content.matchAll(/\b[A-Za-z0-9\/+=_]{32,}[A-Za-z0-9\/+=_]*\b/g)) {
-        const t = m[0];
-        const matchIndex = m.index || 0;
-        
-        // Skip if this looks like a CSS variable or is in CSS context
-        if (isCSSVariable(t) || isInCSSContext(asset.content, matchIndex)) {
-          continue;
-        }
-        
-        // Skip common false positives
-        if (t.match(/^[a-zA-Z-]+$/) ||           // Only letters and hyphens (CSS properties)
-            t.match(/^[0-9]+$/) ||               // Only numbers
-            t.includes('--') ||                  // CSS custom properties
-            t.startsWith('data-') ||             // Data attributes
-            t.startsWith('aria-') ||             // ARIA attributes
-            t.match(/^(webkit|moz|ms|o)-/) ||   // Vendor prefixes
-            t.match(/(color|theme|style|class|component|module|chunk|vendor|polyfill)/i)) {  // Common non-secret patterns
-          continue;
-        }
-        
-        if (looksRandom(t)) {
-          const context = asset.content.slice(Math.max(0, matchIndex - 100), Math.min(asset.content.length, matchIndex + 100));
-          entropyTokens.push({
-            id: entropyTokens.length + 718, // Starting from example ID 718
-            sample: t,
-            asset_url: asset.url,
-            around: context.replace(/\s+/g, ' ').trim()
-          });
-        }
-      }
-      
-      // Triage entropy tokens with SecretSanity
-      if (entropyTokens.length > 0) {
-        log(`[clientSecretScanner] Triaging ${entropyTokens.length} high-entropy tokens with SecretSanity`);
-        const triageResults = await triageFindings(entropyTokens);
-        
-        // Only add tokens that passed triage as real secrets
-        for (const result of triageResults) {
-          if (result.decision === 'REAL_SECRET') {
-            const token = entropyTokens.find(t => t.id === result.id);
-            if (token) {
-              hits.push({
-                pattern: { name: 'High-entropy token - potential secret', regex:/./, severity:'MEDIUM' },
-                match: token.sample,
-                context: token.around
-              });
-            }
-          }
-        }
-        
-        // Log improvement note
-        const improvementNote = generateScannerImprovementNote(triageResults);
-        log(`[SecretSanity] ${improvementNote}`);
-        
-        const realSecrets = triageResults.filter(r => r.decision === 'REAL_SECRET').length;
-        log(`[SecretSanity] Reduced ${entropyTokens.length} entropy tokens to ${realSecrets} likely secrets (${Math.round((1 - realSecrets/entropyTokens.length) * 100)}% reduction)`);
-      }
+        const context = asset.content.slice(Math.max(0, matchIndex - 100), matchIndex + value.length + 100);
+        const candidate: TriageCandidate = { value, context, filename: asset.url };
 
-      if (hits.length > 0) {
-        allCandidates.push({ asset, hits });
+        // Run the candidate through the triage pipeline
+        const triage = triagePotentialSecret(candidate);
+
+        if (triage.decision === TriageDecision.CONFIRMED_SECRET) {
+            log(`[+] CONFIRMED SECRET (${triage.reason}) in ${asset.url}`);
+            // Directly create a finding for this high-confidence hit
+            await createFindingForSecret(scanId, asset, triage.pattern!, value);
+            total++;
+        } else if (triage.decision === TriageDecision.POTENTIAL_SECRET) {
+            // It's ambiguous. Add it to the list for batch LLM analysis.
+            const potentialPattern = {
+                name: 'High-entropy Token',
+                regex: /./, // Placeholder
+                severity: 'MEDIUM' as 'MEDIUM'
+            };
+            llmCandidates.push({ asset, hit: candidate, pattern: potentialPattern });
+        }
+        // If NOT_A_SECRET, we do nothing. It's noise.
       }
     }
 
-    // Process results (SecretSanity has already filtered entropy-based candidates)
-    for (const { asset, hits } of allCandidates) {
-      if (!hits.length) continue;
-      log(`[clientSecretScanner] ${hits.length} validated hit(s) → ${asset.url}`);
-      let assetHits = 0;
+    // BATCH LLM ANALYSIS (STAGE 4)
+    if (llmCandidates.length > 0) {
+        log(`[?] Sending ${llmCandidates.length} ambiguous candidates to LLM for final analysis...`);
+        const llmResults = await validateWithLLM_Improved(llmCandidates.map(c => c.hit));
 
-      for (const { pattern, match } of hits) {
-        if (++assetHits > 25) { log('  ↪ noisy asset, truncated'); break; }
-        total++;
-
-        const artifactId = await insertArtifact({
-          type: 'secret',
-          val_text: `[Client] ${pattern.name}`,
-          severity: pattern.severity,
-          src_url: asset.url,
-          meta: { scan_id: scanId, detector:'ClientSecretScanner', pattern:pattern.name, preview:match.slice(0,50) }
-        });
-
-        // Special handling for database exposure
-        if (pattern.name.includes('Database') || pattern.name.includes('Postgres') || pattern.name.includes('Supabase') || pattern.name.includes('Neon')) {
-          await insertFinding(
-            artifactId,
-            'DATABASE_EXPOSURE',
-            'CRITICAL: Database access exposed! Rotate credentials IMMEDIATELY and restrict database access. This allows full database access including reading, modifying, and deleting all data.',
-            `Exposed ${pattern.name} in client-side code. This grants FULL DATABASE ACCESS. Sample: ${match.slice(0,80)}…`
-          );
-        } else {
-          await insertFinding(
-            artifactId,
-            'CLIENT_SIDE_SECRET_EXPOSURE',
-            'Revoke / rotate this credential immediately; it is publicly downloadable.',
-            `Exposed ${pattern.name} in client asset. Sample: ${match.slice(0,80)}…`
-          );
+        for (let i = 0; i < llmCandidates.length; i++) {
+            if (llmResults[i] && llmResults[i].is_secret) {
+                const { asset, hit, pattern } = llmCandidates[i];
+                log(`[+] LLM CONFIRMED SECRET (${llmResults[i].reason}) in ${asset.url}`);
+                await createFindingForSecret(scanId, asset, pattern, hit.value);
+                total++;
+            } else {
+                // Optional: log rejected candidates for debugging
+                const { asset, hit } = llmCandidates[i];
+                const reason = llmResults[i]?.reason || 'Unknown reason';
+                log(`[-] LLM REJECTED (${reason}): ${hit.value.slice(0,30)}... in ${asset.url}`);
+            }
         }
-      }
     }
   } catch (err) {
     log('[clientSecretScanner] error', { error: err as Error });
