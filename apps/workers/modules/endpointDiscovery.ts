@@ -13,7 +13,7 @@
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { parse } from 'node-html-parser';
 import { insertArtifact } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 import { URL } from 'node:url';
 import * as https from 'node:https';
 

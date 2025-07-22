@@ -20,7 +20,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { XMLParser } from 'fast-xml-parser';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 import { runNuclei } from '../util/nucleiWrapper.js';
 
 const exec = promisify(execFile);

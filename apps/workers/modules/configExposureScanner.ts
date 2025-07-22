@@ -8,7 +8,7 @@
 
 import axios from 'axios';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 // Common configuration file paths to probe
 const CONFIG_PATHS = [

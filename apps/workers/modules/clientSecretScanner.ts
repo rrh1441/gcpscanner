@@ -2,7 +2,7 @@
 // Lightweight client-side secret detector with plug-in regex support
 // ------------------------------------------------------------------
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 import fs from 'node:fs';
 import yaml from 'yaml';                       // ← NEW – tiny dependency

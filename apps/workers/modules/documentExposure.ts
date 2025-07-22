@@ -27,7 +27,7 @@ import { OpenAI } from 'openai';
 
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { uploadFile } from '../core/objectStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 /* ---------------------------------------------------------------------------
  * 0.  Types & Interfaces

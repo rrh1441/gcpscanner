@@ -5,7 +5,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 import { TRUFFLEHOG_GIT_DEPTH } from '../core/env.js';
 
 const exec = promisify(execFile);

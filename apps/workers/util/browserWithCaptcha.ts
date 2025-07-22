@@ -8,7 +8,7 @@
 import type { Page } from 'puppeteer';
 import { withPage } from './dynamicBrowser.js';
 import { captchaSolver, solveRecaptcha, type CaptchaResult } from './captchaSolver.js';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 
 const log = (...args: unknown[]) => rootLog('[browserWithCaptcha]', ...args);
 

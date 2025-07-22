@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import axios from 'axios';
 import { glob } from 'glob';
 import semver from 'semver';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 
 const exec = promisify(execFile);
 const log = (...args: unknown[]) => rootLog('[cveVerifier]', ...args);

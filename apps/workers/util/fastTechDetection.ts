@@ -8,7 +8,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import axios from 'axios';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 
 const exec = promisify(execFile);
 const log = (...args: unknown[]) => rootLog('[fastTechDetection]', ...args);

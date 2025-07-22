@@ -20,7 +20,11 @@
     "start:frontend": "next start",
     "lint": "next lint",
     "smoke:nuclei": "npx ts-node ./scripts/smoke-nuclei.ts",
-    "clean": "rm -rf node_modules dist .next && pnpm -r exec rm -rf node_modules dist .next"
+    "clean": "rm -rf node_modules dist .next && pnpm -r exec rm -rf node_modules dist .next",
+    "bulk-load": "npx tsx ./scripts/bulk-company-loader.ts",
+    "api-load": "npx tsx ./scripts/bulk-company-api-loader.ts",
+    "supabase-load": "npx tsx ./scripts/supabase-bulk-loader.ts",
+    "queue-monitor": "npx tsx ./scripts/queue-monitor.ts"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.2",

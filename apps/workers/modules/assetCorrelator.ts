@@ -15,7 +15,7 @@
  */
 
 import { pool, insertArtifact } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 import dns from 'node:dns/promises';
 import pLimit from 'p-limit';
 

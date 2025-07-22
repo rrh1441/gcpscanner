@@ -5,7 +5,7 @@
  * including vulnerability data from NVD and OSV.dev for comprehensive supply chain tracking.
  */
 
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 import { type NormalizedComponent } from './cpeNormalization.js';
 
 const log = (...args: unknown[]) => rootLog('[sbomGenerator]', ...args);

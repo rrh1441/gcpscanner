@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 const exec = promisify(execFile);
 

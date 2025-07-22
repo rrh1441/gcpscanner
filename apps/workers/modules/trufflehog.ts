@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 import { scanGitRepos } from './scanGitRepos.js';
 
 const exec = promisify(execFile);

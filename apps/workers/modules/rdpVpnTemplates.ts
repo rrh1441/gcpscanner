@@ -7,7 +7,7 @@
 
 import * as fs from 'node:fs/promises';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 import { runNuclei, createTargetsFile, cleanupFile } from '../util/nucleiWrapper.js';
 
 // Configuration constants

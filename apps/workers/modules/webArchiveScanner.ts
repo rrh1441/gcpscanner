@@ -10,7 +10,7 @@
 import axios from 'axios';
 import * as https from 'node:https';
 import { insertArtifact } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 // Configuration - Tier-based scanning
 const TIER1_MAX_ARCHIVE_URLS = 20;      // Quick scan: 20 URLs

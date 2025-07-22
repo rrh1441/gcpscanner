@@ -22,7 +22,7 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 import { 
   runNuclei as runNucleiWrapper, 
   runTwoPassScan

@@ -11,7 +11,7 @@ import { OpenAI } from 'openai';
 import axios from 'axios';
 import * as https from 'node:https';
 import { insertArtifact, pool } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 // Configuration
 const AI_MODEL = 'gpt-4.1-mini-2025-04-14'; // Using specified model

@@ -11,7 +11,7 @@ import { readFile, unlink, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 import { isNonHtmlAsset } from '../util/nucleiWrapper.js';
 import { executeModule, fileOperation } from '../util/errorHandler.js';
 

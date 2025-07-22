@@ -20,7 +20,7 @@ import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
 import axios from 'axios';
 import { insertArtifact } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 const execFileAsync = promisify(execFile);
 const execAsync = promisify(execRaw);

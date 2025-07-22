@@ -5,7 +5,7 @@
  * for accurate vulnerability matching against NVD, OSV.dev, and other databases.
  */
 
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 
 const log = (...args: unknown[]) => rootLog('[cpeNormalization]', ...args);
 

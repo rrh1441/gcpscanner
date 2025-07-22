@@ -7,7 +7,7 @@
 
 import axios from 'axios';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 import { executeModule, apiCall, errorHandler } from '../util/errorHandler.js';
 
 // Configuration constants

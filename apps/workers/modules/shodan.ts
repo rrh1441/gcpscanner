@@ -16,7 +16,7 @@
 
 import axios, { AxiosError } from 'axios';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Configuration                                                              */

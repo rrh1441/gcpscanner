@@ -8,7 +8,7 @@
 import axios from 'axios';
 import { createHash } from 'node:crypto';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 import { withPage } from '../util/dynamicBrowser.js';
 
 // Configuration constants

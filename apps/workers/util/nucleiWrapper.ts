@@ -12,7 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 import { insertArtifact } from '../core/artifactStore.js';
 
 // Base flags applied to every Nuclei execution for consistency

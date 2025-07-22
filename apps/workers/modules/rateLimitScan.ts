@@ -19,7 +19,7 @@
 
 import axios, { Method } from 'axios';
 import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 const REQUEST_BURST_COUNT = 25; // Number of requests to send to trigger a baseline limit.
 const REQUEST_TIMEOUT = 5000;

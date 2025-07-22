@@ -10,7 +10,7 @@ import puppeteer from 'puppeteer';
 import { Mutex } from 'async-mutex';
 import * as os from 'node:os';
 import * as process from 'node:process';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 
 const log = (...args: unknown[]) => rootLog('[dynamicBrowser]', ...args);
 

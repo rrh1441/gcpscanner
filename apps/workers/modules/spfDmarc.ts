@@ -18,7 +18,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 
 const exec = promisify(execFile);
 

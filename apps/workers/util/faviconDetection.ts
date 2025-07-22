@@ -8,7 +8,7 @@
 
 import axios from 'axios';
 import { createHash } from 'node:crypto';
-import { log as rootLog } from '../core/logger.js';
+import { logLegacy as rootLog } from '../core/logger.js';
 import { type FastTechResult } from './fastTechDetection.js';
 
 const log = (...args: unknown[]) => rootLog('[faviconDetection]', ...args);

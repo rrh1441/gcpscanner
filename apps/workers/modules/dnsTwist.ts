@@ -24,7 +24,7 @@ import * as https from 'node:https';
 import axios, { AxiosRequestConfig } from 'axios';
 import { parse } from 'node-html-parser';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
-import { log } from '../core/logger.js';
+import { logLegacy as log } from '../core/logger.js';
 import { resolveWhoisBatch } from './whoisWrapper.js';
 
 // -----------------------------------------------------------------------------
