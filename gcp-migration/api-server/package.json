@@ -1,0 +1,24 @@
+{
+  "name": "dealbrief-api-gcp",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "dev": "tsx server.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.4.0",
+    "@fastify/multipart": "^7.6.0",
+    "@google-cloud/pubsub": "^4.0.7",
+    "fastify": "^4.24.3",
+    "firebase-admin": "^11.11.1", 
+    "nanoid": "^4.0.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0",
+    "typescript": "^5.2.2",
+    "tsx": "^3.14.0"
+  }
+}
