@@ -23,6 +23,7 @@ A comprehensive cybersecurity scanning platform with both backend scanning capab
 - **Secret Detection**: TruffleHog integration for exposed credentials
 - **Database Security**: Port scanning and default credential checks
 - **Rate Limiting Tests**: OWASP ZAP integration for rate limit bypass testing
+- **Fast Tech Detection**: Lightweight technology stack identification (≤150ms)
 
 ### Frontend Dashboard
 - **Scan Management**: Create, monitor, and manage security scans
@@ -91,6 +92,27 @@ A comprehensive cybersecurity scanning platform with both backend scanning capab
 - `/findings` - Global findings analysis
 - `/reports` - Report generation and management
 - `/settings` - User settings and configuration
+
+## Fast Tech Scanner Usage
+
+The Fast Tech Scanner provides lightweight technology detection without external dependencies:
+
+```typescript
+import { detectTechnologiesBatch } from './apps/workers/util/fast-tech-scanner.js';
+
+(async () => {
+  const results = await detectTechnologiesBatch([
+    'https://example.com', 
+    'https://shopify.com'
+  ]);
+  
+  console.table(results.map(r => ({ 
+    url: r.url, 
+    techs: r.technologies.map(t => t.name).join(', '),
+    duration: `${r.duration}ms`
+  })));
+})();
+```
 
 ## Security Tools Required
 
