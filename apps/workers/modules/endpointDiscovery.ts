@@ -11,11 +11,13 @@
  */
 
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
-import { parse } from 'node-html-parser';
+import { parse as parseHTML } from 'node-html-parser';
 import { insertArtifact } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 import { URL } from 'node:url';
 import * as https from 'node:https';
+import { parse as parseJS } from 'acorn';
+import { simple } from 'acorn-walk';
 
 // ---------- Configuration ----------------------------------------------------
 
@@ -104,6 +106,31 @@ const USER_AGENTS = [
 const VERBS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 const HTTPS_AGENT = new https.Agent({ rejectUnauthorized: true });
 
+// Backend identifier detection patterns
+const RX = {
+  firebaseHost  : /([a-z0-9-]{6,})\.(?:firebaseio\.com|(?:[a-z0-9-]+\.)?firebasedatabase\.app)/i,
+  firebasePID   : /projectId["']\s*:\s*["']([a-z0-9-]{6,})["']/i,
+
+  s3Host        : /([a-z0-9.\-]{3,63})\.s3[\.\-][a-z0-9\-\.]*\.amazonaws\.com/i,
+  s3Path        : /s3[\.\-]amazonaws\.com\/([a-z0-9.\-]{3,63})/i,
+  s3CompatHost  : /([a-z0-9.\-]{3,63})\.(?:r2\.cloudflarestorage\.com|digitaloceanspaces\.com|s3\.wasabisys\.com|s3\.[a-z0-9\-\.]*\.backblazeb2\.com)/i,
+  bucketAssign  : /bucket["']\s*[:=]\s*["']([a-z0-9.\-]{3,63})["']/i,
+
+  azureHost     : /([a-z0-9]{3,24})\.(?:blob|table|file)\.core\.windows\.net/i,
+  azureAcct     : /storageAccount["']\s*[:=]\s*["']([a-z0-9]{3,24})["']/i,
+  azureSAS      : /sv=\d{4}-\d{2}-\d{2}&ss=[bqtf]+&srt=[a-z]+&sp=[a-z]+&sig=[A-Za-z0-9%]+/i,
+
+  gcsHost       : /storage\.googleapis\.com\/([a-z0-9.\-_]+)/i,
+  gcsGs         : /gs:\/\/([a-z0-9.\-_]+)/i,
+  gcsPath       : /\/b\/([a-z0-9.\-_]+)\/o/i,
+
+  supabaseHost  : /https:\/\/([a-z0-9-]+)\.supabase\.(?:co|com)/i,
+
+  realmHost     : /https:\/\/([a-z0-9-]+)\.realm\.mongodb\.com/i,
+
+  connString    : /((?:postgres|mysql|mongodb|redis|mssql):\/\/[^ \n\r'"`]+@[^\s'":\/\[\]]+(?::\d+)?\/[^\s'"]+)/i
+} as const;
+
 // ---------- Types ------------------------------------------------------------
 
 interface DiscoveredEndpoint {
@@ -144,6 +171,15 @@ interface EndpointReport {
   allowedVerbs: string[];
   authNeeded: boolean;
   notes: string[];
+}
+
+export interface BackendIdentifier {
+  provider:
+    | 'firebase' | 's3' | 'gcs' | 'azure' | 'supabase'
+    | 'r2' | 'spaces' | 'b2' | 'realm';
+  id : string;                        // bucket / project / account
+  raw: string;                        // original match
+  src: { file: string; line: number } // traceability
 }
 
 // ---------- Endpoint Visibility Checking ------------------------------------
@@ -227,6 +263,7 @@ async function checkEndpoint(urlStr: string): Promise<EndpointReport> {
 
 const discovered = new Map<string, DiscoveredEndpoint>();
 const webAssets = new Map<string, WebAsset>();
+const backendIdSet = new Map<string, BackendIdentifier>();
 
 const getRandomUA = (): string =>
   USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
@@ -261,6 +298,14 @@ const MAX_TOTAL_ASSET_SIZE = 100 * 1024 * 1024; // 100MB total asset content
 
 let totalAssetSize = 0;
 
+function recordBackend(id: BackendIdentifier): void {
+  const key = `${id.provider}:${id.id}`;
+  if (!backendIdSet.has(key)) {
+    backendIdSet.set(key, id);
+    log(`[endpointDiscovery] +backend ${id.provider}:${id.id} from ${id.src.file}:${id.src.line}`);
+  }
+}
+
 const addWebAsset = (asset: WebAsset): void => {
   if (webAssets.has(asset.url)) return;
   
@@ -294,6 +339,46 @@ const getAssetType = (url: string, mimeType?: string): WebAsset['type'] => {
   if (url.endsWith('.html') || url.endsWith('.htm') || mimeType?.includes('html')) return 'html';
   return 'other';
 };
+
+// ---------- Backend Identifier Extraction -----------------------------------
+
+function extractViaRegex(source: string, file: string): void {
+  const lines = source.split('\n');
+
+  function m(rx: RegExp, prov: BackendIdentifier['provider']) {
+    let match: RegExpExecArray | null;
+    rx.lastIndex = 0;                                  // safety
+    while ((match = rx.exec(source))) {
+      const idx  = match.index;
+      const lnum = source.slice(0, idx).split('\n').length;
+      recordBackend({ provider: prov, id: match[1], raw: match[0],
+                      src: { file, line: lnum } });
+    }
+  }
+
+  m(RX.firebaseHost , 'firebase');  m(RX.firebasePID , 'firebase');
+  m(RX.s3Host       , 's3');        m(RX.s3Path      , 's3');
+  m(RX.s3CompatHost , 's3');        m(RX.bucketAssign, 's3');
+  m(RX.azureHost    , 'azure');     m(RX.azureAcct   , 'azure');
+  m(RX.gcsHost      , 'gcs');       m(RX.gcsGs       , 'gcs'); m(RX.gcsPath, 'gcs');
+  m(RX.supabaseHost , 'supabase');
+  m(RX.realmHost    , 'realm');
+  m(RX.connString   , 's3');   // generic DB strings → handled later
+}
+
+function extractViaAST(source: string, file: string): void {
+  let ast;
+  try { ast = parseJS(source, { ecmaVersion: 'latest' }); }
+  catch { return; }
+
+  simple(ast as any, {
+    Literal(node: any) {
+      if (typeof node.value !== 'string') return;
+      const v = node.value as string;
+      extractViaRegex(v, file);                // reuse regex on literals
+    }
+  });
+}
 
 // ---------- Passive Discovery ------------------------------------------------
 
@@ -330,7 +415,7 @@ const parseSitemap = async (sitemapUrl: string, baseUrl: string): Promise<void> 
   });
   if (!res.ok || typeof res.data !== 'string') return;
 
-  const root = parse(res.data);
+  const root = parseHTML(res.data);
   const locElems = root.querySelectorAll('loc');
   for (const el of locElems) {
     try {
@@ -367,6 +452,10 @@ const analyzeJsFile = async (jsUrl: string, baseUrl: string): Promise<void> => {
     content: res.data.length > 50000 ? res.data.substring(0, 50000) + '...[truncated]' : res.data,
     mimeType: 'application/javascript'
   });
+
+  // Extract backend identifiers from JavaScript
+  extractViaRegex(res.data, jsUrl);
+  extractViaAST(res.data, jsUrl);
 
   // Hunt for corresponding source map
   await huntSourceMap(jsUrl, baseUrl);
@@ -466,7 +555,10 @@ const crawlPage = async (
     mimeType: contentType
   });
 
-  const root = parse(res.data);
+  // Extract backend identifiers from HTML content
+  extractViaRegex(res.data, url);
+
+  const root = parseHTML(res.data);
   const pageLinks = new Set<string>();
 
   root.querySelectorAll('a[href]').forEach((a) => {
@@ -510,8 +602,9 @@ const crawlPage = async (
   root.querySelectorAll('script:not([src])').forEach((script, index) => {
     const content = script.innerHTML;
     if (content.length > 100) { // Only save substantial inline scripts
+      const inlineUrl = `${url}#inline-script-${index}`;
       addWebAsset({
-        url: `${url}#inline-script-${index}`,
+        url: inlineUrl,
         type: 'javascript',
         size: content.length,
         confidence: 'high',
@@ -519,6 +612,9 @@ const crawlPage = async (
         content: content.length > 10000 ? content.substring(0, 10000) + '...[truncated]' : content,
         mimeType: 'application/javascript'
       });
+      // Extract backend identifiers from inline scripts
+      extractViaRegex(content, inlineUrl);
+      extractViaAST(content, inlineUrl);
     }
   });
 
@@ -700,6 +796,7 @@ export async function runEndpointDiscovery(job: { domain: string; scanId?: strin
   
   discovered.clear();
   webAssets.clear();
+  backendIdSet.clear();
   totalAssetSize = 0; // Reset memory usage counter
 
   // Existing discovery methods
@@ -713,6 +810,7 @@ export async function runEndpointDiscovery(job: { domain: string; scanId?: strin
 
   const endpoints = [...discovered.values()];
   const assets = [...webAssets.values()];
+  const backendArr = [...backendIdSet.values()];
 
   /* ------- Visibility enrichment (public/static vs. auth) ---------------- */
   await enrichVisibility(endpoints);
@@ -753,7 +851,21 @@ export async function runEndpointDiscovery(job: { domain: string; scanId?: strin
     });
   }
 
-  log(`[endpointDiscovery] ⇢ done – ${endpoints.length} endpoints, ${assets.length} web assets`);
+  // Save discovered backend identifiers
+  if (backendArr.length) {
+    await insertArtifact({
+      type: 'backend_identifiers',
+      severity: 'INFO',
+      val_text: `Identified ${backendArr.length} backend IDs on ${job.domain}`,
+      meta: { 
+        scan_id: job.scanId,
+        scan_module: 'endpointDiscovery',
+        backendArr 
+      }
+    });
+  }
+
+  log(`[endpointDiscovery] ⇢ done – ${endpoints.length} endpoints, ${assets.length} web assets, ${backendArr.length} backend IDs`);
   // Return 0 as this module doesn't create findings, only artifacts
   return 0;
 }

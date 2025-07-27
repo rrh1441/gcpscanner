@@ -26,6 +26,7 @@ import { runCensysScan } from './modules/censysPlatformScan.js';
 import { runZAPScan } from './modules/zapScan.js';
 import { runAssetCorrelator } from './modules/assetCorrelator.js';
 import { runConfigExposureScanner } from './modules/configExposureScanner.js';
+import { runBackendExposureScanner } from './modules/backendExposureScanner.js';
 import { pool } from './core/artifactStore.js';
 
 config();
@@ -66,7 +67,8 @@ const TIER_1_MODULES = [
   'tls_scan',
   'spf_dmarc',
   // 'trufflehog',  // Not applicable for external scanning - requires access to git repos
-  'client_secret_scanner'
+  'client_secret_scanner',
+  'backend_exposure_scanner'
 ];
 
 // Tier 2: Deep scanning modules requiring authorization - includes active probing
@@ -315,6 +317,10 @@ async function processScan(job: ScanJob): Promise<void> {
     
     if (activeModules.includes('client_secret_scanner')) {
       dependentParallelPromises.client_secret_scanner = runClientSecretScanner({ scanId });
+    }
+    
+    if (activeModules.includes('backend_exposure_scanner')) {
+      dependentParallelPromises.backend_exposure_scanner = runBackendExposureScanner({ scanId });
     }
 
     // Wait for all immediate parallel modules to complete
