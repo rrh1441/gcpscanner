@@ -29,7 +29,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --project="$PROJECT_ID" \
   --service-account="$SERVICE_ACCOUNT" \
   --set-env-vars="PROJECT_ID=${PROJECT_ID},REGION=${REGION},GCS_ARTIFACTS_BUCKET=dealbrief-artifacts" \
-  --set-secrets="SHODAN_API_KEY=shodan-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,CENSYS_API_ID=censys-api-id:latest,CENSYS_API_SECRET=censys-api-secret:latest,BREACHDIRECTORY_API_KEY=breachdirectory-api-key:latest,SPIDERFOOT_API_KEY=spiderfoot-api-key:latest,ABUSEIPDB_API_KEY=abuseipdb-api-key:latest" \
+  --set-secrets="SHODAN_API_KEY=shodan-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,CENSYS_API_TOKEN=censys-api-token:latest" \
   --memory="4Gi" \
   --cpu="2" \
   --timeout="3600" \

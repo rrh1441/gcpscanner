@@ -29,6 +29,7 @@ Complete end-to-end scan pipeline deployment for Google Cloud Platform.
 
 1. **GCP Project Setup**
    ```bash
+   gcloud config set account ryan@simplcyber.io
    gcloud config set project precise-victory-467219-s4
    gcloud services enable run.googleapis.com pubsub.googleapis.com firestore.googleapis.com storage-api.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
    ```

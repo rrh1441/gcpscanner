@@ -9,22 +9,24 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     dnsutils \
     nmap \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev --legacy-peer-deps
 
 # Copy source code and modules
 COPY . .
 
 # Install security tools (nuclei, etc.)
-RUN curl -L https://github.com/projectdiscovery/nuclei/releases/latest/download/nuclei_3.0.4_linux_amd64.zip -o nuclei.zip \
+RUN curl -L https://github.com/projectdiscovery/nuclei/releases/download/v3.0.4/nuclei_3.0.4_linux_amd64.zip -o nuclei.zip \
     && unzip nuclei.zip \
     && mv nuclei /usr/local/bin/ \
-    && rm nuclei.zip
+    && rm nuclei.zip \
+    && chmod +x /usr/local/bin/nuclei
 
 # Update nuclei templates
 RUN nuclei -update-templates
