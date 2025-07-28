@@ -2,6 +2,7 @@ import { config } from 'dotenv';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { Storage } from '@google-cloud/storage';
+import { PubSub } from '@google-cloud/pubsub';
 
 // Import your existing scan modules
 import { runShodanScan } from './modules/shodan.js';
@@ -21,10 +22,11 @@ import { runClientSecretScanner } from './modules/clientSecretScanner.js';
 
 config();
 
-// Initialize Firebase and GCS
+// Initialize Firebase, GCS, and Pub/Sub
 const app = initializeApp();
 const db = getFirestore(app);
 const storage = new Storage();
+const pubsub = new PubSub();
 const artifactsBucket = storage.bucket(process.env.GCS_ARTIFACTS_BUCKET || 'dealbrief-artifacts');
 
 function log(...args: any[]) {
@@ -372,6 +374,9 @@ async function processScan(job: ScanJob): Promise<void> {
     
     log(`✅ Scan ${scanId} completed: ${totalFindings} findings, max severity: ${maxSeverity}`);
     
+    // Trigger report generation
+    await triggerReportGeneration(scanId);
+    
   } catch (error) {
     log(`❌ Scan ${scanId} failed:`, error);
     
@@ -390,22 +395,79 @@ async function processScan(job: ScanJob): Promise<void> {
   }
 }
 
-// Main worker entry point (for Cloud Run Jobs triggered by Pub/Sub)
-async function main() {
+// Trigger report generation via Pub/Sub
+async function triggerReportGeneration(scanId: string): Promise<void> {
   try {
-    // Parse job from environment (Cloud Run Jobs get this from Pub/Sub trigger)
-    const jobData = JSON.parse(process.env.JOB_DATA || '{}') as ScanJob;
+    const reportTopic = pubsub.topic('report-generation');
+    const message = {
+      scanId,
+      timestamp: new Date().toISOString()
+    };
     
-    if (!jobData.scanId) {
-      throw new Error('No scan job data provided');
-    }
+    await reportTopic.publishMessage({ 
+      json: message 
+    });
     
-    log(`🚀 Worker starting for scan ${jobData.scanId}`);
+    log(`📋 Report generation triggered for scan ${scanId}`);
+  } catch (error) {
+    log(`❌ Failed to trigger report generation for ${scanId}:`, error);
+  }
+}
+
+// Pub/Sub message handler for scan jobs
+async function handleScanMessage(message: any): Promise<void> {
+  try {
+    const jobData = JSON.parse(message.data.toString()) as ScanJob;
+    log(`📨 Received scan job: ${jobData.scanId}`);
+    
     await processScan(jobData);
-    log(`🏁 Worker completed for scan ${jobData.scanId}`);
+    message.ack();
+    
+    log(`✅ Scan job ${jobData.scanId} completed and acknowledged`);
     
   } catch (error) {
-    log('💥 Worker failed:', error);
+    log(`❌ Failed to process scan message:`, error);
+    message.nack();
+  }
+}
+
+// Main worker entry point - listens to Pub/Sub for scan jobs
+async function main() {
+  try {
+    log('🚀 Scanner worker starting...');
+    
+    const subscription = pubsub.subscription('scan-jobs-subscription');
+    
+    // Configure subscription options
+    subscription.setOptions({
+      ackDeadlineSeconds: 600,  // 10 minutes
+      maxMessages: 1,           // Process one scan at a time
+      allowExcessMessages: false
+    });
+    
+    // Set up message handler
+    subscription.on('message', handleScanMessage);
+    subscription.on('error', (error) => {
+      log('❌ Subscription error:', error);
+    });
+    
+    log('👂 Listening for scan jobs on scan-jobs-subscription...');
+    
+    // Keep the process alive
+    process.on('SIGINT', async () => {
+      log('🛑 Received SIGINT, closing subscription...');
+      await subscription.close();
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', async () => {
+      log('🛑 Received SIGTERM, closing subscription...');
+      await subscription.close();
+      process.exit(0);
+    });
+    
+  } catch (error) {
+    log('💥 Worker startup failed:', error);
     process.exit(1);
   }
 }

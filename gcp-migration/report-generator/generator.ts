@@ -2,6 +2,7 @@ import { config } from 'dotenv';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { Storage } from '@google-cloud/storage';
+import { PubSub } from '@google-cloud/pubsub';
 import Handlebars from 'handlebars';
 import puppeteer from 'puppeteer';
 import { readFileSync } from 'fs';
@@ -9,10 +10,11 @@ import { nanoid } from 'nanoid';
 
 config();
 
-// Initialize Firebase and GCS
+// Initialize Firebase, GCS, and Pub/Sub
 const app = initializeApp();
 const db = getFirestore(app);
 const storage = new Storage();
+const pubsub = new PubSub();
 const reportsBucket = storage.bucket(process.env.GCS_REPORTS_BUCKET || 'dealbrief-reports');
 
 function log(...args: any[]) {
@@ -22,8 +24,9 @@ function log(...args: any[]) {
 
 interface ReportRequest {
   scanId: string;
-  reportType: 'summary' | 'standard' | 'detailed';
-  format: 'html' | 'pdf' | 'both';
+  reportType?: 'summary' | 'standard' | 'detailed';
+  format?: 'html' | 'pdf' | 'both';
+  timestamp?: string;
 }
 
 interface ScanData {
@@ -310,20 +313,67 @@ async function generateReport(request: ReportRequest): Promise<{ reportId: strin
   }
 }
 
-// Main entry point for Cloud Run Jobs
-async function main() {
+// Pub/Sub message handler for report generation requests
+async function handleReportMessage(message: any): Promise<void> {
   try {
-    const requestData = JSON.parse(process.env.REPORT_REQUEST || '{}') as ReportRequest;
+    const requestData = JSON.parse(message.data.toString()) as ReportRequest;
+    log(`📨 Received report request: ${requestData.scanId}`);
     
-    if (!requestData.scanId) {
-      throw new Error('No report request data provided');
-    }
+    // Set defaults for optional fields
+    const request: ReportRequest = {
+      scanId: requestData.scanId,
+      reportType: requestData.reportType || 'standard',
+      format: requestData.format || 'both'
+    };
     
-    const result = await generateReport(requestData);
-    log(`🏁 Report generation completed:`, result);
+    const result = await generateReport(request);
+    message.ack();
+    
+    log(`✅ Report ${request.scanId} completed and acknowledged`);
     
   } catch (error) {
-    log('💥 Report generation failed:', error);
+    log(`❌ Failed to process report message:`, error);
+    message.nack();
+  }
+}
+
+// Main entry point - listens to Pub/Sub for report generation requests
+async function main() {
+  try {
+    log('🚀 Report generator starting...');
+    
+    const subscription = pubsub.subscription('report-generation-subscription');
+    
+    // Configure subscription options
+    subscription.setOptions({
+      ackDeadlineSeconds: 600,  // 10 minutes
+      maxMessages: 1,           // Process one report at a time
+      allowExcessMessages: false
+    });
+    
+    // Set up message handler
+    subscription.on('message', handleReportMessage);
+    subscription.on('error', (error) => {
+      log('❌ Subscription error:', error);
+    });
+    
+    log('👂 Listening for report requests on report-generation-subscription...');
+    
+    // Keep the process alive
+    process.on('SIGINT', async () => {
+      log('🛑 Received SIGINT, closing subscription...');
+      await subscription.close();
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', async () => {
+      log('🛑 Received SIGTERM, closing subscription...');
+      await subscription.close();
+      process.exit(0);
+    });
+    
+  } catch (error) {
+    log('💥 Report generator startup failed:', error);
     process.exit(1);
   }
 }
