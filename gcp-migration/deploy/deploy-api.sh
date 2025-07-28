@@ -3,8 +3,8 @@
 # Deploy API Server to Cloud Run
 set -euo pipefail
 
-PROJECT_ID="${PROJECT_ID:-dealbrief-scanner}"
-REGION="${REGION:-us-central1}"
+PROJECT_ID="${PROJECT_ID:-precise-victory-467219-s4}"
+REGION="${REGION:-us-west1}"
 SERVICE_NAME="dealbrief-api"
 IMAGE_NAME="dealbrief-api"
 

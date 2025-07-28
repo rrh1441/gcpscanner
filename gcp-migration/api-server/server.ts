@@ -5,23 +5,68 @@ import { PubSub } from '@google-cloud/pubsub';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { nanoid } from 'nanoid';
-import { normalizeDomain } from '../workers/util/domainNormalizer.js';
 
 config();
 
 const fastify = Fastify({ logger: true });
 
-// Initialize Firebase Admin (uses Application Default Credentials in GCP)
-const app = initializeApp();
-const db = getFirestore(app);
+// Global service states
+let app;
+let db;
+let pubsub;
+let scanJobsTopic;
+let servicesReady = false;
 
-// Initialize Pub/Sub
-const pubsub = new PubSub();
-const scanJobsTopic = pubsub.topic('scan-jobs');
+// Async initialization (non-blocking)
+const initializeServices = async () => {
+  try {
+    log('🔄 Starting service initialization...');
+    
+    // Initialize Firebase Admin
+    if (!app) {
+      app = initializeApp();
+      db = getFirestore(app);
+      log('✅ Firebase initialized successfully');
+    }
+
+    // Initialize Pub/Sub
+    if (!pubsub) {
+      pubsub = new PubSub();
+      scanJobsTopic = pubsub.topic('scan-jobs');
+      log('✅ Pub/Sub initialized successfully');
+    }
+
+    servicesReady = true;
+    log('🎉 All services initialized and ready');
+    
+  } catch (error) {
+    log('❌ Service initialization failed:', error);
+    // Retry after 5 seconds
+    setTimeout(initializeServices, 5000);
+  }
+};
+
+// Start initialization immediately but don't block server startup
+initializeServices();
 
 function log(...args: any[]) {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}]`, ...args);
+}
+
+// Simple domain validation function
+function normalizeDomain(rawDomain: string) {
+  // Remove protocol and trailing slash
+  const cleaned = rawDomain.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  
+  // Basic validation
+  const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+  
+  return {
+    isValid: domainRegex.test(cleaned),
+    normalizedDomain: cleaned,
+    validationErrors: domainRegex.test(cleaned) ? [] : ['Invalid domain format']
+  };
 }
 
 // CORS configuration
@@ -42,13 +87,50 @@ fastify.get('/health', async (request, reply) => {
   return { 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    service: 'dealbrief-api-gcp'
+    service: 'dealbrief-api-gcp',
+    servicesReady,
+    firebase: !!db,
+    pubsub: !!scanJobsTopic
   };
+});
+
+// Readiness check
+fastify.get('/ready', async (request, reply) => {
+  if (servicesReady) {
+    return { 
+      status: 'ready', 
+      timestamp: new Date().toISOString(),
+      services: {
+        firebase: !!db,
+        pubsub: !!scanJobsTopic
+      }
+    };
+  } else {
+    reply.status(503);
+    return { 
+      status: 'not_ready', 
+      timestamp: new Date().toISOString(),
+      services: {
+        firebase: !!db,
+        pubsub: !!scanJobsTopic
+      }
+    };
+  }
 });
 
 // Create scan endpoint
 fastify.post('/scan', async (request, reply) => {
   try {
+    if (!servicesReady || !db || !scanJobsTopic) {
+      reply.status(503);
+      return { 
+        error: 'Service not ready - database or messaging not initialized',
+        servicesReady,
+        firebase: !!db,
+        pubsub: !!scanJobsTopic
+      };
+    }
+
     const { companyName, domain: rawDomain, tags } = request.body as { 
       companyName: string; 
       domain: string; 
