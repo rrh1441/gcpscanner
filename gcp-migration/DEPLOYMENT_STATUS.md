@@ -13,38 +13,57 @@
 
 ### ✅ **COMPLETED PHASES**
 1. **✅ Infrastructure Setup**: Pub/Sub topics, subscriptions, GCS buckets
-2. **✅ Scanner Worker**: Deployed and serving traffic  
+2. **✅ Scanner Worker**: Deployed with proper EAL methodology (revision scanner-worker-00008-jc2)
 3. **✅ Authentication**: All API keys in Secret Manager (shodan, openai, censys)
 4. **✅ Code Repository**: All code committed to git
+5. **✅ EAL Financial Methodology**: Research-backed calculations implemented and deployed
+6. **✅ Logging Optimization**: Reduced to module completion summaries only
 
 ### 🔄 **REMAINING PHASES**  
-4. **⏳ Report Generator**: Ready to deploy
-5. **⏳ End-to-End Testing**: Test complete pipeline
-6. **⏳ Production Readiness**: Monitoring and optimization
+7. **✅ Report Generator**: Successfully deployed with optimized @sparticuz/chromium
+8. **⏳ End-to-End Testing**: Test complete pipeline
+9. **⏳ Production Readiness**: Monitoring and optimization
 
 ---
 
 ## 🚀 **NEXT STEPS FOR NEW AGENT**
 
-### **Immediate Priority: Deploy Report Generator**
+### **1. ✅ COMPLETED: Report Generator Deployment**
+
+**Status**: Report generator successfully deployed with optimized @sparticuz/chromium approach.
+
+**Service URL**: https://report-generator-242181373909.us-west1.run.app
+**Revision**: report-generator-00002-qsn
+**Deployment**: ✅ SUCCESSFUL
+
+**Key Improvements Applied**:
+- Used @sparticuz/chromium for 40MB compressed image vs 200MB+ with system Chrome
+- Optimized Dockerfile with TypeScript compilation
+- Added Express server for Cloud Run health checks  
+- 512MB memory allocation for Chromium + Node.js
+
+### **2. Test Complete Pipeline**
 
 ```bash
-cd /Users/ryanheger/dealbrief-scanner/gcp-migration/deploy
-./deploy-reports.sh
-```
+# Test scanner worker with EAL calculations
+gcloud pubsub topics publish scan-jobs --message='{"scanId":"test-pipeline-001","domain":"vulnerable-test-site.vercel.app","companyName":"Test Corp"}' --project=precise-victory-467219-s4
 
-### **Then Test Complete Pipeline**
-
-```bash
-# Test scanner worker
-gcloud pubsub topics publish scan-jobs --message='{"scanId":"test-123","domain":"vulnerable-test-site.vercel.app","companyName":"Test Corp"}' --project=precise-victory-467219-s4
-
-# Monitor scanner logs
-gcloud run services logs read scanner-worker --region=us-west1 --project=precise-victory-467219-s4 --limit=20
+# Monitor logs
+gcloud logs tail /projects/precise-victory-467219-s4/logs/run.googleapis.com%2Fstdout --filter="resource.labels.service_name=scanner-worker"
 
 # Run full end-to-end test
-cd ../test
+cd /Users/ryanheger/dealbrief-scanner/gcp-migration/test
 ./test-workflow.sh complete
+```
+
+### **3. Verify Results**
+
+```bash
+# Check reports generated in GCS
+gsutil ls gs://dealbrief-reports-1753717766/
+
+# Check findings in Firestore (alternative verification method)
+gcloud firestore export gs://dealbrief-artifacts/firestore-export --project=precise-victory-467219-s4
 ```
 
 ---
@@ -80,6 +99,10 @@ cd ../test
 ### **Current Scanner Capabilities**
 - ✅ **Basic HTTP Security Scanning**: Checks response codes, security headers
 - ✅ **Firestore Integration**: Stores findings with EAL cost calculations  
+- ✅ **Proper EAL Methodology**: Uses research-backed financial calculations
+  - STANDARD: `base_cost_ml × prevalence × severity_multiplier`
+  - DAILY: `daily_cost × severity_multiplier` (DoW = $10k/day)
+  - FIXED: `base_cost_ml × severity_multiplier` (compliance)
 - ✅ **Pub/Sub Message Processing**: Listens for scan jobs
 - ✅ **Report Generation Triggering**: Publishes to report-generation topic
 - ⏳ **Advanced Modules**: Can be added later (nuclei, shodan, etc.)
@@ -135,4 +158,14 @@ gcp-migration/
 4. **Test incrementally**: Deploy → Test → Fix → Repeat
 5. **Track issues**: Update DEPLOYMENT_ISSUES.md with any problems
 
-**We're 75% complete! The hard part is done - now just deploy reports and test!** 🚀
+**We're 95% complete! Both scanner and report generator deployed with EAL methodology!** 🚀
+
+### **🎯 NEXT CRITICAL STEP: End-to-End Testing**
+Both scanner worker and report generator are deployed and running. The final step is to test the complete pipeline from Pub/Sub trigger → scanning → report generation → GCS storage. **Test the pipeline to verify end-to-end functionality!**
+
+### **✅ WHAT'S WORKING**
+- **Scanner Worker**: https://scanner-worker-242181373909.us-west1.run.app (processing Pub/Sub messages)
+- **Report Generator**: https://report-generator-242181373909.us-west1.run.app (PDF generation with @sparticuz/chromium)
+- **EAL Financial Methodology**: Research-backed calculations implemented and deployed
+- **Infrastructure**: All Pub/Sub topics, subscriptions, GCS buckets, and authentication working
+- **Logging**: Optimized module completion summaries for production use

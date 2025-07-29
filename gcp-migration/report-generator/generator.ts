@@ -4,7 +4,9 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { Storage } from '@google-cloud/storage';
 import { PubSub } from '@google-cloud/pubsub';
 import Handlebars from 'handlebars';
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
+import chromium from '@sparticuz/chromium';
+import express from 'express';
 import { readFileSync } from 'fs';
 import { nanoid } from 'nanoid';
 
@@ -223,11 +225,13 @@ async function generateHTMLReport(scanId: string, reportType: string): Promise<s
 }
 
 async function generatePDFFromHTML(htmlContent: string): Promise<Buffer> {
-  log('🔄 Converting HTML to PDF');
+  log('🔄 Converting HTML to PDF with optimized Chromium');
   
   const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
   });
   
   try {
@@ -264,7 +268,7 @@ async function uploadToGCS(content: string | Buffer, fileName: string, mimeType:
 }
 
 async function generateReport(request: ReportRequest): Promise<{ reportId: string; htmlUrl?: string; pdfUrl?: string }> {
-  const { scanId, reportType, format } = request;
+  const { scanId, reportType = 'standard', format = 'both' } = request;
   const reportId = nanoid(11);
   
   log(`🎯 Generating ${reportType} report for scan ${scanId} in ${format} format`);
@@ -342,14 +346,23 @@ async function main() {
   try {
     log('🚀 Report generator starting...');
     
-    const subscription = pubsub.subscription('report-generation-subscription');
+    // Set up Express server for health checks
+    const app = express();
+    const port = parseInt(process.env.PORT || '8080');
     
-    // Configure subscription options
-    subscription.setOptions({
-      ackDeadlineSeconds: 600,  // 10 minutes
-      maxMessages: 1,           // Process one report at a time
-      allowExcessMessages: false
+    app.get('/', (req, res) => {
+      res.json({ status: 'healthy', service: 'report-generator', timestamp: new Date().toISOString() });
     });
+    
+    app.get('/health', (req, res) => {
+      res.json({ status: 'healthy' });
+    });
+    
+    const server = app.listen(port, () => {
+      log(`🌐 HTTP server listening on port ${port}`);
+    });
+    
+    const subscription = pubsub.subscription('report-generation-subscription');
     
     // Set up message handler
     subscription.on('message', handleReportMessage);
@@ -361,13 +374,15 @@ async function main() {
     
     // Keep the process alive
     process.on('SIGINT', async () => {
-      log('🛑 Received SIGINT, closing subscription...');
+      log('🛑 Received SIGINT, closing subscription and server...');
+      server.close();
       await subscription.close();
       process.exit(0);
     });
     
     process.on('SIGTERM', async () => {
-      log('🛑 Received SIGTERM, closing subscription...');
+      log('🛑 Received SIGTERM, closing subscription and server...');
+      server.close();
       await subscription.close();
       process.exit(0);
     });
