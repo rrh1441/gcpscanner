@@ -17,9 +17,46 @@ const storage = new Storage();
 const pubsub = new PubSub();
 const artifactsBucket = storage.bucket(process.env.GCS_ARTIFACTS_BUCKET || 'dealbrief-artifacts');
 
-function log(...args: any[]) {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [worker]`, ...args);
+// Logging levels
+enum LogLevel {
+  ERROR = 0,
+  WARN = 1,
+  INFO = 2,
+  DEBUG = 3
+}
+
+const LOG_LEVEL = LogLevel.INFO; // Only show important info and errors
+
+function log(level: LogLevel, ...args: any[]) {
+  if (level <= LOG_LEVEL) {
+    const timestamp = new Date().toISOString();
+    const prefix = level === LogLevel.ERROR ? '❌' : level === LogLevel.WARN ? '⚠️' : 'ℹ️';
+    console.log(`[${timestamp}] [worker] ${prefix}`, ...args);
+  }
+}
+
+function logError(...args: any[]) { log(LogLevel.ERROR, ...args); }
+function logWarn(...args: any[]) { log(LogLevel.WARN, ...args); }
+function logInfo(...args: any[]) { log(LogLevel.INFO, ...args); }
+function logDebug(...args: any[]) { log(LogLevel.DEBUG, ...args); }
+
+// Module completion summary
+function logModuleCompletion(moduleName: string, findings: Array<{severity: string}>) {
+  if (findings.length === 0) {
+    logInfo(`✅ ${moduleName}: 0 findings`);
+    return;
+  }
+  
+  const severityCounts = findings.reduce((acc, f) => {
+    acc[f.severity] = (acc[f.severity] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  
+  const summary = Object.entries(severityCounts)
+    .map(([severity, count]) => `${count} ${severity.toLowerCase()}`)
+    .join(', ');
+    
+  logInfo(`✅ ${moduleName}: ${findings.length} findings (${summary})`);
 }
 
 interface ScanJob {
@@ -31,34 +68,214 @@ interface ScanJob {
   createdAt: string;
 }
 
-// Cost attribution mapping
-const COST_MAP: Record<string, { base: number; multiplier: number }> = {
-  'exposed_api_key': { base: 25000, multiplier: 1.2 },
-  'sql_injection': { base: 50000, multiplier: 1.5 },
-  'xss_vulnerability': { base: 15000, multiplier: 1.1 },
-  'exposed_admin_panel': { base: 30000, multiplier: 1.3 },
-  'weak_ssl_config': { base: 8000, multiplier: 1.0 },
-  'subdomain_takeover': { base: 40000, multiplier: 1.4 },
-  'directory_listing': { base: 5000, multiplier: 0.8 },
-  'http_error': { base: 2000, multiplier: 0.5 },
-  'missing_security_header': { base: 5000, multiplier: 0.8 },
-  'connectivity_issue': { base: 15000, multiplier: 1.2 },
-  'scan_error': { base: 1000, multiplier: 0.3 },
-  'default': { base: 10000, multiplier: 1.0 }
+// EAL calculation system based on financial methodology
+interface EALData {
+  finding_type: string;
+  category: string;
+  base_cost_low: number;
+  base_cost_ml: number;
+  base_cost_high: number;
+  daily_cost: number;
+  prevalence: number;
+  calculation_method: 'STANDARD' | 'DAILY' | 'FIXED';
+  notes: string;
+}
+
+// Load EAL data from methodology - this should be populated from CSV files
+const EAL_DATABASE: { [key: string]: EALData } = {
+  'ACCESSIBILITY_VIOLATION': {
+    finding_type: 'ACCESSIBILITY_VIOLATION',
+    category: 'Compliance',
+    base_cost_low: 6000,
+    base_cost_ml: 15000,
+    base_cost_high: 30000,
+    daily_cost: 0,
+    prevalence: 0.02,
+    calculation_method: 'FIXED',
+    notes: 'Minor WCAG issues'
+  },
+  'API_KEY_EXPOSURE': {
+    finding_type: 'API_KEY_EXPOSURE',
+    category: 'Credential Exposure',
+    base_cost_low: 40000,
+    base_cost_ml: 100000,
+    base_cost_high: 200000,
+    daily_cost: 0,
+    prevalence: 0.24,
+    calculation_method: 'STANDARD',
+    notes: 'API token leak'
+  },
+  'CLIENT_SECRET_EXPOSURE': {
+    finding_type: 'CLIENT_SECRET_EXPOSURE',
+    category: 'Credential Exposure',
+    base_cost_low: 60000,
+    base_cost_ml: 150000,
+    base_cost_high: 300000,
+    daily_cost: 0,
+    prevalence: 0.24,
+    calculation_method: 'STANDARD',
+    notes: 'Server-side secrets'
+  },
+  'CLIENT_SIDE_SECRET_EXPOSURE': {
+    finding_type: 'CLIENT_SIDE_SECRET_EXPOSURE',
+    category: 'Credential Exposure',
+    base_cost_low: 30000,
+    base_cost_ml: 75000,
+    base_cost_high: 150000,
+    daily_cost: 0,
+    prevalence: 0.24,
+    calculation_method: 'STANDARD',
+    notes: 'Secrets in JS'
+  },
+  'DATA_BREACH_EXPOSURE': {
+    finding_type: 'DATA_BREACH_EXPOSURE', 
+    category: 'Data Exposure',
+    base_cost_low: 100000,
+    base_cost_ml: 250000,
+    base_cost_high: 500000,
+    daily_cost: 0,
+    prevalence: 0.40,
+    calculation_method: 'STANDARD',
+    notes: 'Customer data leak'
+  },
+  'DENIAL_OF_WALLET': {
+    finding_type: 'DENIAL_OF_WALLET',
+    category: 'Financial Risk',
+    base_cost_low: 0,
+    base_cost_ml: 0,
+    base_cost_high: 0,
+    daily_cost: 10000,
+    prevalence: 0.35,
+    calculation_method: 'DAILY',
+    notes: 'Cloud resource abuse'
+  },
+  'EMAIL_SECURITY_GAP': {
+    finding_type: 'EMAIL_SECURITY_GAP',
+    category: 'Email Security',
+    base_cost_low: 20000,
+    base_cost_ml: 50000,
+    base_cost_high: 100000,
+    daily_cost: 0,
+    prevalence: 0.15,
+    calculation_method: 'STANDARD',
+    notes: 'No DMARC / SPF'
+  },
+  'EXPOSED_SERVICE': {
+    finding_type: 'EXPOSED_SERVICE',
+    category: 'Infrastructure',
+    base_cost_low: 6000,
+    base_cost_ml: 15000,
+    base_cost_high: 30000,
+    daily_cost: 0,
+    prevalence: 0.25,
+    calculation_method: 'STANDARD',
+    notes: 'Unneeded port open'
+  },
+  'MALICIOUS_TYPOSQUAT': {
+    finding_type: 'MALICIOUS_TYROSQUAT',
+    category: 'Brand Protection',
+    base_cost_low: 60000,
+    base_cost_ml: 125000,
+    base_cost_high: 250000,
+    daily_cost: 0,
+    prevalence: 0.10,
+    calculation_method: 'STANDARD',
+    notes: 'Phishing/BEC staging'
+  },
+  'MISSING_TLS_CERTIFICATE': {
+    finding_type: 'MISSING_TLS_CERTIFICATE',
+    category: 'Configuration',
+    base_cost_low: 8000,
+    base_cost_ml: 20000,
+    base_cost_high: 40000,
+    daily_cost: 0,
+    prevalence: 0.25,
+    calculation_method: 'STANDARD',
+    notes: 'No HTTPS'
+  },
+  'SUBDOMAIN_TAKEOVER': {
+    finding_type: 'SUBDOMAIN_TAKEOVER',
+    category: 'Infrastructure', 
+    base_cost_low: 30000,
+    base_cost_ml: 75000,
+    base_cost_high: 150000,
+    daily_cost: 0,
+    prevalence: 0.25,
+    calculation_method: 'STANDARD',
+    notes: 'CNAME dangling'
+  },
+  'TLS_CONFIGURATION_ISSUE': {
+    finding_type: 'TLS_CONFIGURATION_ISSUE',
+    category: 'Configuration',
+    base_cost_low: 5000,
+    base_cost_ml: 12500,
+    base_cost_high: 25000,
+    daily_cost: 0,
+    prevalence: 0.20,
+    calculation_method: 'STANDARD',
+    notes: 'Weak cipher'
+  },
+  'VERIFIED_CVE': {
+    finding_type: 'VERIFIED_CVE',
+    category: 'Vulnerability',
+    base_cost_low: 24000,
+    base_cost_ml: 60000,
+    base_cost_high: 120000,
+    daily_cost: 0,
+    prevalence: 0.30,
+    calculation_method: 'STANDARD', 
+    notes: 'Exploitable CVE'
+  }
+};
+
+// Severity multipliers from methodology
+const SEVERITY_MULTIPLIERS: { [key: string]: number } = {
+  'CRITICAL': 2.0,
+  'HIGH': 1.5,
+  'MEDIUM': 1.0,
+  'LOW': 0.5,
+  'INFO': 0.1
 };
 
 function calculateEAL(findingType: string, severity: string): number {
-  const costInfo = COST_MAP[findingType] || COST_MAP['default'];
-  let severityMultiplier = 1.0;
+  // Map common scanner finding types to EAL database types
+  const typeMapping: { [key: string]: string } = {
+    'exposed_api_key': 'API_KEY_EXPOSURE',
+    'weak_ssl_config': 'TLS_CONFIGURATION_ISSUE',
+    'subdomain_takeover': 'SUBDOMAIN_TAKEOVER',
+    'directory_listing': 'EXPOSED_SERVICE',
+    'http_error': 'EXPOSED_SERVICE',
+    'missing_security_header': 'TLS_CONFIGURATION_ISSUE',
+    'connectivity_issue': 'EXPOSED_SERVICE',
+    'scan_error': 'EXPOSED_SERVICE',
+    'no_tls': 'MISSING_TLS_CERTIFICATE',
+    'sql_injection': 'DATA_BREACH_EXPOSURE',
+    'xss_vulnerability': 'DATA_BREACH_EXPOSURE',
+    'exposed_admin_panel': 'EXPOSED_SERVICE'
+  };
+
+  const mappedType = typeMapping[findingType] || findingType.toUpperCase();
+  const ealData = EAL_DATABASE[mappedType];
   
-  switch (severity) {
-    case 'CRITICAL': severityMultiplier = 2.0; break;
-    case 'HIGH': severityMultiplier = 1.5; break;
-    case 'MEDIUM': severityMultiplier = 1.0; break;
-    case 'LOW': severityMultiplier = 0.5; break;
+  if (!ealData) {
+    // Fallback for unmapped types - use conservative estimate
+    console.warn(`Unknown finding type for EAL calculation: ${findingType}`);
+    return Math.round(15000 * (SEVERITY_MULTIPLIERS[severity] || 1.0));
   }
-  
-  return Math.round(costInfo.base * costInfo.multiplier * severityMultiplier);
+
+  const severityMultiplier = SEVERITY_MULTIPLIERS[severity] || 1.0;
+
+  if (ealData.calculation_method === 'DAILY') {
+    // For Denial of Wallet - return daily cost (they'd catch it quickly)
+    const dailyCost = ealData.daily_cost * severityMultiplier;
+    return Math.round(dailyCost);
+  } else if (ealData.calculation_method === 'FIXED') {
+    // For compliance issues - fixed costs with severity adjustment
+    return Math.round(ealData.base_cost_ml * severityMultiplier);
+  } else {
+    // STANDARD calculation: base_cost_ml × prevalence × severity_multiplier
+    return Math.round(ealData.base_cost_ml * ealData.prevalence * severityMultiplier);
+  }
 }
 
 // Enhanced artifact storage with GCS integration
@@ -136,7 +353,7 @@ async function storeFinding(params: {
     .collection('findings')
     .add(findingDoc);
     
-  log(`💰 Finding stored: ${type} (EAL: $${ealEstimate.toLocaleString()})`);
+  logDebug(`Finding stored: ${type} (EAL: $${ealEstimate.toLocaleString()})`);
   return docRef.id;
 }
 
@@ -179,7 +396,7 @@ async function updateScanStatus(scanId: string, updates: {
     
     await db.collection('scans').doc(scanId).update(updateData);
   } catch (error) {
-    log(`❌ Failed to update scan ${scanId}:`, (error as Error).message);
+    logError(`Failed to update scan ${scanId}:`, (error as Error).message);
   }
 }
 
@@ -188,7 +405,7 @@ async function runBasicDomainScan({ domain, scanId }: { domain: string; scanId: 
   let findingsCount = 0;
   
   try {
-    log(`🔍 Running basic scan for ${domain}`);
+    logDebug(`Running basic scan for ${domain}`);
     
     // Demo finding 1: Basic HTTP check
     try {
@@ -237,10 +454,10 @@ async function runBasicDomainScan({ domain, scanId }: { domain: string; scanId: 
       findingsCount++;
     }
     
-    log(`✅ Basic scan completed for ${domain}: ${findingsCount} findings`);
+    // Module completion summary will be handled separately
     
   } catch (error) {
-    log(`❌ Scan error for ${domain}:`, error);
+    logError(`Scan error for ${domain}:`, error);
     await storeFinding({
       scanId,
       type: 'scan_error',
@@ -263,7 +480,7 @@ const AVAILABLE_MODULES = [
 async function processScan(job: ScanJob): Promise<void> {
   const { scanId, companyName, domain } = job;
   
-  log(`🎯 Processing scan ${scanId} for ${companyName} (${domain})`);
+  logInfo(`🎯 Processing scan ${scanId} for ${companyName} (${domain})`);
   
   try {
     // Initialize scan
@@ -288,7 +505,7 @@ async function processScan(job: ScanJob): Promise<void> {
     totalFindings += basicScanFindings;
     completedModules++;
     
-    log(`✅ Basic domain scan completed: ${basicScanFindings} findings`);
+    // Scan completion logged by module
     
     // Determine max severity from findings
     const findingsSnapshot = await db
@@ -313,13 +530,13 @@ async function processScan(job: ScanJob): Promise<void> {
       max_severity: maxSeverity
     });
     
-    log(`✅ Scan ${scanId} completed: ${totalFindings} findings, max severity: ${maxSeverity}`);
+    logInfo(`✅ Scan ${scanId} completed: ${totalFindings} findings, max severity: ${maxSeverity}`);
     
     // Trigger report generation
     await triggerReportGeneration(scanId);
     
   } catch (error) {
-    log(`❌ Scan ${scanId} failed:`, error);
+    logError(`Scan ${scanId} failed:`, error);
     
     await updateScanStatus(scanId, {
       status: 'failed',
@@ -349,9 +566,9 @@ async function triggerReportGeneration(scanId: string): Promise<void> {
       json: message 
     });
     
-    log(`📋 Report generation triggered for scan ${scanId}`);
+    logInfo(`📋 Report generation triggered for scan ${scanId}`);
   } catch (error) {
-    log(`❌ Failed to trigger report generation for ${scanId}:`, error);
+    logError(`Failed to trigger report generation for ${scanId}:`, error);
   }
 }
 
@@ -359,15 +576,15 @@ async function triggerReportGeneration(scanId: string): Promise<void> {
 async function handleScanMessage(message: any): Promise<void> {
   try {
     const jobData = JSON.parse(message.data.toString()) as ScanJob;
-    log(`📨 Received scan job: ${jobData.scanId}`);
+    logInfo(`📨 Received scan job: ${jobData.scanId}`);
     
     await processScan(jobData);
     message.ack();
     
-    log(`✅ Scan job ${jobData.scanId} completed and acknowledged`);
+    logDebug(`Scan job ${jobData.scanId} completed and acknowledged`);
     
   } catch (error) {
-    log(`❌ Failed to process scan message:`, error);
+    logError(`Failed to process scan message:`, error);
     message.nack();
   }
 }
@@ -375,7 +592,7 @@ async function handleScanMessage(message: any): Promise<void> {
 // Main worker entry point - listens to Pub/Sub for scan jobs
 async function main() {
   try {
-    log('🚀 Scanner worker starting...');
+    logInfo('🚀 Scanner worker starting...');
     
     // Start HTTP server for Cloud Run health checks
     const app = express();
@@ -390,7 +607,7 @@ async function main() {
     });
     
     const server = app.listen(port, () => {
-      log(`🌐 HTTP server listening on port ${port}`);
+      logInfo(`🌐 HTTP server listening on port ${port}`);
     });
     
     const subscription = pubsub.subscription('scan-jobs-subscription');
@@ -401,28 +618,28 @@ async function main() {
     // Set up message handler
     subscription.on('message', handleScanMessage);
     subscription.on('error', (error) => {
-      log('❌ Subscription error:', error);
+      logError('Subscription error:', error);
     });
     
-    log('👂 Listening for scan jobs on scan-jobs-subscription...');
+    logInfo('👂 Listening for scan jobs on scan-jobs-subscription...');
     
     // Keep the process alive
     process.on('SIGINT', async () => {
-      log('🛑 Received SIGINT, closing subscription...');
+      logInfo('🛑 Received SIGINT, closing subscription...');
       await subscription.close();
       server.close();
       process.exit(0);
     });
     
     process.on('SIGTERM', async () => {
-      log('🛑 Received SIGTERM, closing subscription...');
+      logInfo('🛑 Received SIGTERM, closing subscription...');
       await subscription.close();
       server.close();
       process.exit(0);
     });
     
   } catch (error) {
-    log('💥 Worker startup failed:', error);
+    logError('💥 Worker startup failed:', error);
     process.exit(1);
   }
 }
