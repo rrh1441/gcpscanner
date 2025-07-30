@@ -302,9 +302,9 @@ async function storeArtifact(params: {
   const artifactDoc = {
     type,
     content: gcsUrl ? null : content, // Store in Firestore only if small
-    gcs_url: gcsUrl,
+    gcs_url: gcsUrl || null,
     severity,
-    src_url: srcUrl,
+    src_url: srcUrl || null,
     metadata: metadata || {},
     created_at: new Date()
   };
@@ -339,8 +339,8 @@ async function storeFinding(params: {
     description,
     recommendation,
     severity,
-    src_url: srcUrl,
-    artifact_id: artifactId,
+    src_url: srcUrl || null,
+    artifact_id: artifactId || null,
     eal_estimate: ealEstimate,
     attack_type_code: mapToAttackType(type),
     metadata: metadata || {},
@@ -394,7 +394,7 @@ async function updateScanStatus(scanId: string, updates: {
       updateData.completed_at = new Date();
     }
     
-    await db.collection('scans').doc(scanId).update(updateData);
+    await db.collection('scans').doc(scanId).set(updateData, { merge: true });
   } catch (error) {
     logError(`Failed to update scan ${scanId}:`, (error as Error).message);
   }
@@ -483,12 +483,19 @@ async function processScan(job: ScanJob): Promise<void> {
   logInfo(`🎯 Processing scan ${scanId} for ${companyName} (${domain})`);
   
   try {
-    // Initialize scan
-    await updateScanStatus(scanId, {
+    // Create initial scan document
+    await db.collection('scans').doc(scanId).set({
+      scanId,
+      companyName,
+      domain,
       status: 'processing',
       progress: 0,
-      current_module: 'initialization'
+      current_module: 'initialization',
+      created_at: new Date(),
+      updated_at: new Date()
     });
+    
+    logDebug(`Created scan document for ${scanId}`);
     
     const totalModules = AVAILABLE_MODULES.length;
     let completedModules = 0;
@@ -575,7 +582,18 @@ async function triggerReportGeneration(scanId: string): Promise<void> {
 // Pub/Sub message handler for scan jobs
 async function handleScanMessage(message: any): Promise<void> {
   try {
-    const jobData = JSON.parse(message.data.toString()) as ScanJob;
+    // Handle message data - it could be a Buffer or already a string
+    let messageData: string;
+    if (Buffer.isBuffer(message.data)) {
+      messageData = message.data.toString('utf8');
+    } else if (typeof message.data === 'string') {
+      messageData = message.data;
+    } else {
+      messageData = JSON.stringify(message.data);
+    }
+    
+    logDebug(`Raw message data: ${messageData}`);
+    const jobData = JSON.parse(messageData) as ScanJob;
     logInfo(`📨 Received scan job: ${jobData.scanId}`);
     
     await processScan(jobData);
