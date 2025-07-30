@@ -32,12 +32,12 @@ CAPTCHA_API_KEY=your_api_key_here
 ENABLE_CAPTCHA_SOLVING=1
 ```
 
-### Fly.io Deployment
+### GCP Deployment
 
-The API key has been securely deployed to Fly.io:
+The API key has been securely deployed to GCP Secret Manager:
 
 ```bash
-fly secrets set CAPTCHA_API_KEY=b06d4f75b730ffe4bae9f6be4caac4c8
+gcloud secrets create captcha-api-key --data-file=- <<< "b06d4f75b730ffe4bae9f6be4caac4c8"
 ```
 
 ## Usage Examples
@@ -292,7 +292,7 @@ interface ScanMetrics {
 
 ### API Key Protection
 - ✅ **Environment Variables**: Never hard-code API keys
-- ✅ **Fly Secrets**: Secure deployment-time injection
+- ✅ **Secret Manager**: Secure deployment-time injection
 - ✅ **Runtime Checks**: Graceful handling when key is missing
 
 ### Rate Limiting
@@ -311,7 +311,7 @@ interface ScanMetrics {
 
 1. **"Captcha solver not configured"**
    - Check `CAPTCHA_API_KEY` environment variable
-   - Verify Fly secret deployment: `fly secrets list`
+   - Verify secret deployment: `gcloud secrets versions list captcha-api-key`
 
 2. **"ERROR_ZERO_BALANCE"**
    - Add funds to 2captcha account

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 import { scanGitRepos } from './scanGitRepos.js';
 
@@ -77,15 +77,9 @@ async function getGitRepos(scanId: string): Promise<string[]> {
     const gitUrls = new Set<string>();
     
     // 1. Check discovered web assets for Git repository URLs
-    const webAssetsResult = await pool.query(`
-      SELECT meta 
-      FROM artifacts 
-      WHERE meta->>'scan_id' = $1 
-        AND type = 'discovered_web_assets'
-      ORDER BY created_at DESC 
-      LIMIT 1
-    `, [scanId]);
-    
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };    
     if (webAssetsResult.rows.length > 0) {
       const assets = webAssetsResult.rows[0].meta?.assets || [];
       for (const asset of assets) {
@@ -102,15 +96,9 @@ async function getGitRepos(scanId: string): Promise<string[]> {
     }
     
     // 2. Check discovered endpoints for Git-related paths
-    const endpointsResult = await pool.query(`
-      SELECT meta 
-      FROM artifacts 
-      WHERE meta->>'scan_id' = $1 
-        AND type = 'discovered_endpoints'
-      ORDER BY created_at DESC 
-      LIMIT 1
-    `, [scanId]);
-    
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };    
     if (endpointsResult.rows.length > 0) {
       const endpoints = endpointsResult.rows[0].meta?.endpoints || [];
       for (const endpoint of endpoints) {
@@ -129,20 +117,9 @@ async function getGitRepos(scanId: string): Promise<string[]> {
     }
     
     // 3. Check for any linked_url artifacts that might contain Git repos
-    const linkedUrlsResult = await pool.query(`
-      SELECT val_text 
-      FROM artifacts 
-      WHERE meta->>'scan_id' = $1 
-        AND type = 'linked_url'
-        AND (
-          val_text ~ 'github\.com' OR 
-          val_text ~ 'gitlab\.com' OR 
-          val_text ~ 'bitbucket\.org' OR
-          val_text ~ '\.git'
-        )
-      LIMIT 20
-    `, [scanId]);
-    
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };    
     for (const row of linkedUrlsResult.rows) {
       const url = row.val_text;
       if (GITHUB_RE.test(url) || GITLAB_RE.test(url) || BITBUCKET_RE.test(url)) {

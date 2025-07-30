@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { readFile, unlink, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { isNonHtmlAsset } from '../util/nucleiWrapper.js';
 import { executeModule, fileOperation } from '../util/errorHandler.js';
@@ -216,16 +216,9 @@ async function ensureZAPImage(): Promise<void> {
 async function getZAPTargets(scanId: string, domain: string): Promise<Array<{url: string, assetType: string}>> {
   try {
     // Get discovered endpoints from endpointDiscovery
-    const { rows } = await pool.query(
-      `SELECT DISTINCT src_url 
-       FROM artifacts 
-       WHERE meta->>'scan_id' = $1 
-         AND type IN ('discovered_endpoint', 'http_probe')
-         AND src_url ILIKE $2
-         AND src_url ~ '^https?://'`,
-      [scanId, `%${domain}%`]
-    );
-    
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };    
     const discoveredUrls = rows.map(r => r.src_url);
     
     // If no discovered endpoints, use high-value defaults

@@ -7,8 +7,6 @@ declare global {
     interface ProcessEnv {
       // Existing environment variables
       NODE_ENV?: 'development' | 'production' | 'test';
-      DATABASE_URL?: string;
-      REDIS_URL?: string;
       
       // API Keys
       ABUSEIPDB_API_KEY?: string;
@@ -31,18 +29,17 @@ declare global {
       WHOISXML_API_KEY?: string;
       WHOISXML_KEY?: string;
       
-      // Storage
-      S3_ACCESS_KEY?: string;
-      S3_BUCKET?: string;
-      S3_ENDPOINT?: string;
-      S3_SECRET_KEY?: string;
-      
       // Monitoring
       SENTRY_DSN?: string;
       
-      // Database
-      SUPABASE_SERVICE_ROLE_KEY?: string;
-      SUPABASE_URL?: string;
+      // Google Cloud Platform
+      GOOGLE_CLOUD_PROJECT?: string;
+      GOOGLE_APPLICATION_CREDENTIALS?: string;
+      GCS_BUCKET_NAME?: string;
+      CLOUD_TASKS_LOCATION?: string;
+      CLOUD_TASKS_QUEUE?: string;
+      WORKER_URL?: string;
+      K_SERVICE?: string;
       
       // Puppeteer Configuration (NEW)
       PUPPETEER_MAX_PAGES?: string;

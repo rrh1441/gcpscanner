@@ -204,44 +204,34 @@ async function main() {
     process.exit(1);
   }
   
-  // Read Pub/Sub message from stdin (CloudEvents format)
-  let inputData = '';
+  // Read scan data from environment variable (set by Cloud Tasks)
+  const scanData = process.env.SCAN_DATA;
   
-  process.stdin.on('data', (chunk) => {
-    inputData += chunk;
-  });
+  if (!scanData) {
+    log('ERROR: No SCAN_DATA environment variable provided');
+    process.exit(1);
+  }
   
-  process.stdin.on('end', async () => {
-    try {
-      // Parse CloudEvents
-      const event = JSON.parse(inputData);
-      const pubsubMessage = event.data?.message?.data;
-      
-      if (!pubsubMessage) {
-        log('ERROR: No Pub/Sub message found');
-        process.exit(1);
-      }
-      
-      // Decode base64 message
-      const messageData = JSON.parse(Buffer.from(pubsubMessage, 'base64').toString('utf-8'));
-      
-      log('Received scan job:', messageData);
-      
-      // Process scan
-      await processScan({
-        scanId: messageData.scanId,
-        companyName: messageData.companyName,
-        domain: messageData.domain,
-        createdAt: messageData.createdAt
-      });
-      
-      log('Job completed successfully');
-      process.exit(0);
-    } catch (error) {
-      log('ERROR:', error);
-      process.exit(1);
-    }
-  });
+  try {
+    const { domain, companyName } = JSON.parse(scanData);
+    const scanId = `scan-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+    
+    log('Processing scan from Cloud Tasks:', { scanId, domain, companyName });
+    
+    // Process scan
+    await processScan({
+      scanId,
+      companyName,
+      domain,
+      createdAt: new Date().toISOString()
+    });
+    
+    log('Job completed successfully');
+    process.exit(0);
+  } catch (error) {
+    log('ERROR:', error);
+    process.exit(1);
+  }
 }
 
 // Run the job

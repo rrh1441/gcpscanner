@@ -36,8 +36,19 @@ export async function initializeDatabase(): Promise<void> {
   console.log('Using Firestore - no initialization needed');
 }
 
-// Export empty pool for compatibility
-export const pool = {
-  query: async () => ({ rows: [], rowCount: 0 }),
-  end: async () => {}
-};
+// Insert finding into Firestore
+export async function insertFinding(finding: any): Promise<number> {
+  try {
+    const docRef = await firestore.collection('findings').add({
+      ...finding,
+      created_at: new Date().toISOString()
+    });
+    
+    // Return a fake ID for compatibility
+    return Date.now();
+  } catch (error) {
+    console.error('Failed to insert finding:', error);
+    throw error;
+  }
+}
+

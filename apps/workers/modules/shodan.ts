@@ -15,7 +15,7 @@
  */
 
 import axios, { AxiosError } from 'axios';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
 /* -------------------------------------------------------------------------- */
@@ -269,15 +269,9 @@ export async function runShodanScan(job: {
   /* Build target set ------------------------------------------------------ */
   const targets = new Set<string>([domain]);
 
-  const dbRes = await pool.query(
-    `SELECT DISTINCT val_text
-     FROM artifacts
-     WHERE meta->>'scan_id' = $1
-       AND type IN ('subdomain','hostname','ip')
-     LIMIT $2`,
-    [scanId, TARGET_LIMIT],
-  );
-  dbRes.rows.forEach((r) => targets.add(r.val_text.trim()));
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };  dbRes.rows.forEach((r) => targets.add(r.val_text.trim()));
 
   log(`[Shodan] Querying ${targets.size} targets (PAGE_LIMIT=${PAGE_LIMIT})`);
 

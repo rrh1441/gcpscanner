@@ -12,7 +12,7 @@ import { runZAPScan } from './modules/zapScan.js';
 
 config();
 
-const queue = new UpstashQueue(process.env.REDIS_URL!);
+const queue = new UpstashQueue(); // Using GCP Cloud Tasks implementation
 
 function log(...args: unknown[]) {
   const timestamp = new Date().toISOString();
@@ -70,7 +70,7 @@ async function processZAPJob(job: ZAPJob): Promise<void> {
  */
 async function startZAPWorker(): Promise<void> {
   // Log worker startup
-  const workerInstanceId = process.env.FLY_MACHINE_ID || `zap-worker-${Date.now()}`;
+  const workerInstanceId = process.env.K_SERVICE || `zap-worker-${Date.now()}`;
   log(`Starting dedicated ZAP worker [${workerInstanceId}]`);
   
   // Initialize database connection

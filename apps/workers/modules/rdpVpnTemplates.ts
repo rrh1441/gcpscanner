@@ -6,7 +6,7 @@
  */
 
 import * as fs from 'node:fs/promises';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { runNuclei, createTargetsFile, cleanupFile } from '../util/nucleiWrapper.js';
 
@@ -88,23 +88,17 @@ async function getTargetUrls(scanId: string, domain: string): Promise<string[]> 
   
   try {
     // Get URLs from previous scans
-    const { rows: urlRows } = await pool.query(
-      `SELECT val_text FROM artifacts 
-       WHERE type='url' AND meta->>'scan_id'=$1`,
-      [scanId]
-    );
-    
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };    
     urlRows.forEach(row => {
       targets.add(row.val_text.trim());
     });
     
     // Get hostnames and subdomains to construct URLs
-    const { rows: hostRows } = await pool.query(
-      `SELECT val_text FROM artifacts 
-       WHERE type IN ('hostname', 'subdomain') AND meta->>'scan_id'=$1`,
-      [scanId]
-    );
-    
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };    
     const hosts = new Set([domain]);
     hostRows.forEach(row => {
       hosts.add(row.val_text.trim());

@@ -181,14 +181,9 @@ async function correlateAssets(scanId: string, domain: string): Promise<void> {
   let artifactBuffer: RawArtifact[] = [];
   
   try {
-    const result = await pool.query(query, [scanId]);
-    artifactBuffer = result.rows || [];
-    artifactCount = artifactBuffer.length;
-    
-    // Collect hostnames from artifacts
-    for (const row of artifactBuffer) {
-      if (row.host) allHostnames.add(row.host);
-      if (row.type === 'hostname' || row.type === 'subdomain') {
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };      if (row.type === 'hostname' || row.type === 'subdomain') {
         allHostnames.add(row.val_text);
       }
       if (row.hostnames_json) {

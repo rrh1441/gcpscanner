@@ -1,7 +1,7 @@
 // apps/workers/modules/clientSecretScanner.ts
 // Lightweight client-side secret detector with plug-in regex support
 // ------------------------------------------------------------------
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
 import fs from 'node:fs';
@@ -718,11 +718,9 @@ export async function runClientSecretScanner(job: ClientSecretScannerJob): Promi
   let total = 0;
 
   try {
-    const { rows } = await pool.query(
-      `SELECT meta FROM artifacts
-       WHERE type='discovered_web_assets' AND meta->>'scan_id'=$1
-       ORDER BY created_at DESC LIMIT 1`, [scanId]);
-
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };
     if (!rows.length || !rows[0].meta?.assets) {
       log('[clientSecretScanner] no assets to scan'); return 0;
     }

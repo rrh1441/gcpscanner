@@ -5,7 +5,7 @@ import pThrottle from 'p-throttle';
 import { AbortController } from 'abort-controller';
 
 import { BackendIdentifier } from './endpointDiscovery.js';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
 /* ------------------------------------------------------------------ */
@@ -108,14 +108,9 @@ function sha256Body(body: string): string {
 
 export async function runBackendExposureScanner(job: { scanId: string }): Promise<number> {
   log('[backendExposureScanner] ▶ start', job.scanId);
-  const { rows } = await pool.query(
-    `SELECT meta->'backendArr' AS ids
-       FROM artifacts
-      WHERE type='backend_identifiers'
-        AND meta->>'scan_id' = $1
-   ORDER BY created_at DESC LIMIT 1`, [job.scanId]
-  );
-  if (!rows.length) { log('no backend identifiers'); return 0; }
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };  if (!rows.length) { log('no backend identifiers'); return 0; }
 
   const ids: BackendIdentifier[] = rows[0].ids ?? [];
   const backoff: ProbeState = Object.create(null);

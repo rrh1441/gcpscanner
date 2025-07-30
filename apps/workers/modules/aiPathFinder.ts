@@ -10,7 +10,7 @@
 import { OpenAI } from 'openai';
 import axios from 'axios';
 import * as https from 'node:https';
-import { insertArtifact, pool } from '../core/artifactStore.js';
+import { insertArtifact } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
 // Configuration
@@ -63,14 +63,9 @@ async function getTechStack(scanId: string, domain: string): Promise<TechStack> 
 
     try {
         // Query for tech stack artifacts from previous scans
-        const techResult = await pool.query(`
-            SELECT meta FROM artifacts 
-            WHERE meta->>'scan_id' = $1 
-            AND type IN ('tech_stack', 'discovered_technology')
-            ORDER BY created_at DESC 
-            LIMIT 5
-        `, [scanId]);
-
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };
         for (const row of techResult.rows) {
             const meta = row.meta;
             

@@ -8,7 +8,6 @@
 import {
   insertArtifact,
   insertFinding,
-  pool,
 } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import {
@@ -110,12 +109,6 @@ function detectEcosystem(tech: TechResult): string {
 
 // Simplified target discovery
 async function discoverTargets(scanId: string, domain: string, providedTargets?: string[]) {
-  // Get discovered endpoints from endpointDiscovery if available
-  const endpointQuery = await pool.query(
-    `SELECT meta FROM artifacts WHERE type = 'discovered_endpoints' AND meta->>'scan_id' = $1 LIMIT 1`,
-    [scanId]
-  );
-  
   const targets = new Set<string>();
   
   // Add primary domain targets
@@ -125,14 +118,6 @@ async function discoverTargets(scanId: string, domain: string, providedTargets?:
   // Add provided targets
   if (providedTargets) {
     providedTargets.forEach(t => targets.add(t));
-  }
-  
-  // Add discovered endpoints if available
-  if (endpointQuery.rows.length > 0 && endpointQuery.rows[0].meta.endpoints) {
-    const endpoints = endpointQuery.rows[0].meta.endpoints;
-    endpoints.slice(0, 10).forEach((ep: any) => {
-      if (ep.url) targets.add(ep.url);
-    });
   }
   
   return {

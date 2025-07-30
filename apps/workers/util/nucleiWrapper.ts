@@ -392,7 +392,7 @@ export async function runNuclei(options: NucleiOptions): Promise<NucleiExecution
   
   let artifactsCreated = 0;
   
-  // Template updates handled by dedicated updater process in fly.toml
+  // Template updates handled by Cloud Run scheduled job
   
   log(`Executing nuclei: /usr/local/bin/nuclei ${args.join(' ')}`);
   

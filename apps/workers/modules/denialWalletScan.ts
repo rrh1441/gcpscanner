@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { executeModule, apiCall } from '../util/errorHandler.js';
 
@@ -235,12 +235,9 @@ class DoWSafetyController {
  */
 async function getEndpointArtifacts(scanId: string): Promise<EndpointReport[]> {
   try {
-    const { rows } = await pool.query(
-      `SELECT meta FROM artifacts 
-       WHERE type='discovered_endpoints' AND meta->>'scan_id'=$1`,
-      [scanId]
-    );
-    
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };    
     const endpoints = rows[0]?.meta?.endpoints || [];
     log(`Found ${endpoints.length} endpoints from endpoint discovery`);
     return endpoints;

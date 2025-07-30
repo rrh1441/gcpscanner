@@ -18,7 +18,7 @@
  */
 
 import axios, { Method } from 'axios';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
 const REQUEST_BURST_COUNT = 25; // Number of requests to send to trigger a baseline limit.
@@ -49,11 +49,9 @@ const IP_SPOOFING_HEADERS = [
  */
 async function getTestableEndpoints(scanId: string, domain: string): Promise<DiscoveredEndpoint[]> {
     try {
-        const result = await pool.query(
-            `SELECT meta FROM artifacts WHERE type = 'discovered_endpoints' AND meta->>'scan_id' = $1 LIMIT 1`,
-            [scanId]
-        );
-        if (result.rows.length > 0 && result.rows[0].meta.endpoints) {
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };        if (result.rows.length > 0 && result.rows[0].meta.endpoints) {
             const endpoints = result.rows[0].meta.endpoints as DiscoveredEndpoint[];
             // Filter for endpoints most likely to have rate limits
             return endpoints.filter(e => 

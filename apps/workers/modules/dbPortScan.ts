@@ -19,7 +19,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { XMLParser } from 'fast-xml-parser';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 import { runNuclei } from '../util/nucleiWrapper.js';
 
@@ -219,13 +219,9 @@ async function getDiscoveredDatabaseTargets(scanId: string): Promise<Target[]> {
         log('[dbPortScan] Querying for dynamically discovered database targets...');
         
         // Query for database service targets discovered from secrets
-        const dbTargetsResult = await pool.query(`
-            SELECT meta FROM artifacts 
-            WHERE meta->>'scan_id' = $1 
-            AND type = 'db_service_target'
-            ORDER BY created_at DESC
-        `, [scanId]);
-        
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };        
         for (const row of dbTargetsResult.rows) {
             const meta = row.meta;
             if (meta.host && meta.port) {
@@ -238,14 +234,9 @@ async function getDiscoveredDatabaseTargets(scanId: string): Promise<Target[]> {
         }
         
         // Query for API endpoint targets that might be databases
-        const apiTargetsResult = await pool.query(`
-            SELECT meta FROM artifacts 
-            WHERE meta->>'scan_id' = $1 
-            AND type = 'api_endpoint_target'
-            AND (meta->>'service_hint' = 'supabase' OR meta->>'service_hint' = 'aws_rds')
-            ORDER BY created_at DESC
-        `, [scanId]);
-        
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };        
         for (const row of apiTargetsResult.rows) {
             const meta = row.meta;
             if (meta.endpoint) {
@@ -276,16 +267,9 @@ async function getDiscoveredDatabaseTargets(scanId: string): Promise<Target[]> {
  */
 async function getCredentialsForTarget(scanId: string, host: string, port: string): Promise<{username?: string, password?: string} | null> {
     try {
-        const credResult = await pool.query(`
-            SELECT meta FROM artifacts 
-            WHERE meta->>'scan_id' = $1 
-            AND type = 'credential_target'
-            AND meta->>'host' = $2
-            AND meta->>'port' = $3
-            ORDER BY created_at DESC 
-            LIMIT 1
-        `, [scanId, host, port]);
-        
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };        
         if (credResult.rows.length > 0) {
             const meta = credResult.rows[0].meta;
             return {

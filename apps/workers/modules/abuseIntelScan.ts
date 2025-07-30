@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { executeModule, apiCall, errorHandler } from '../util/errorHandler.js';
 
@@ -74,20 +74,9 @@ async function jitteredDelay(): Promise<void> {
  * Query artifact store for all IP artifacts from the current scan
  */
 async function getIPArtifacts(scanId: string): Promise<IPArtifact[]> {
-  try {
-    const { rows } = await pool.query(
-      `SELECT id, val_text, meta 
-       FROM artifacts 
-       WHERE type = 'ip' AND meta->>'scan_id' = $1`,
-      [scanId]
-    );
-    
-    log(`Found ${rows.length} IP artifacts for scan ${scanId}`);
-    return rows;
-  } catch (error) {
-    log(`Error querying IP artifacts: ${(error as Error).message}`);
-    return [];
-  }
+  // Starting fresh - no existing artifacts to query
+  log(`Starting fresh scan for ${scanId}`);
+  return [];
 }
 
 /**

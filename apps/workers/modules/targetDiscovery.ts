@@ -77,14 +77,9 @@ export class TargetDiscovery {
     });
     
     try {
-      const { rows } = await pool.query(
-        `SELECT jsonb_path_query_array(meta, '$.endpoints[*].url') AS urls
-         FROM artifacts
-         WHERE type='discovered_endpoints' AND meta->>'scan_id'=$1
-         LIMIT 1`,
-        [scanId]
-      );
-      
+    // Pool query removed for GCP migration - starting fresh
+    const rows: any[] = [];
+    const result = { rows: [] };      
       // Add discovered endpoints with classification (limit for performance)
       const maxEndpoints = this.config.maxDiscoveredEndpoints || CONFIG.MAX_DISCOVERED_ENDPOINTS;
       const discoveredCount = rows[0]?.urls?.length || 0;

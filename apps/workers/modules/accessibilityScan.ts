@@ -7,7 +7,7 @@
 
 import axios from 'axios';
 import { createHash } from 'node:crypto';
-import { insertArtifact, insertFinding, pool } from '../core/artifactStore.js';
+import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { withPage } from '../util/dynamicBrowser.js';
 
@@ -194,28 +194,9 @@ async function computePageHash(url: string): Promise<PageHashData | null> {
  * Check if site has changed since last accessibility scan
  */
 async function hasAccessibilityChanged(domain: string, currentHashes: PageHashData[]): Promise<boolean> {
-  try {
-    // Get the most recent accessibility scan hash
-    const { rows } = await pool.query(`
-      SELECT meta->'page_hashes' as page_hashes
-      FROM artifacts 
-      WHERE type IN ('accessibility_scan_summary', 'accessibility_scan_skipped')
-        AND meta->>'domain' = $1
-        AND meta->>'scan_module' = 'accessibilityScan'
-      ORDER BY created_at DESC 
-      LIMIT 1
-    `, [domain]);
-    
-    if (!rows.length || !rows[0].page_hashes) {
-      log(`accessibility=change_detection domain="${domain}" status="no_previous_scan"`);
-      return true; // No previous scan, so run it
-    }
-    
-    const previousHashes: PageHashData[] = rows[0].page_hashes;
-    
-    // Compare current vs previous hashes
-    const currentHashMap = new Map(currentHashes.map(h => [h.url, h]));
-    const previousHashMap = new Map(previousHashes.map(h => [h.url, h]));
+  // Starting fresh - always run accessibility scan
+  log(`accessibility=change_detection domain="${domain}" status="starting_fresh"`);
+  return true;
     
     // Check if any pages changed
     for (const [url, currentHash] of currentHashMap) {
