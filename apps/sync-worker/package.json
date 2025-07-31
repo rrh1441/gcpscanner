@@ -1,7 +1,7 @@
 {
   "name": "sync-worker",
   "version": "1.0.0",
-  "description": "Sync worker to sync data from Fly.io PostgreSQL to Supabase",
+  "description": "Sync worker to sync data between GCP services and Supabase",
   "main": "sync.ts",
   "scripts": {
     "start": "node dist/sync.js",

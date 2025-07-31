@@ -1,3 +1,3 @@
-// Re-export from GCP implementation
+// Pure GCP implementation - no Redis/Upstash
 export * from './queueGCP.js';
-export { default as UpstashQueue } from './queueGCP.js';
+export { default as GCPQueue } from './queueGCP.js';

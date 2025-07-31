@@ -6,13 +6,13 @@
  */
 
 import { config } from 'dotenv';
-import { UpstashQueue } from './core/queue.js';
-import { initializeDatabase } from './core/artifactStore.js';
+import { GCPQueue } from './core/queue.js';
+import { initializeDatabase } from './core/artifactStoreGCP.js';
 import { runZAPScan } from './modules/zapScan.js';
 
 config();
 
-const queue = new UpstashQueue(); // Using GCP Cloud Tasks implementation
+const queue = new GCPQueue(); // Using GCP Cloud Tasks implementation
 
 function log(...args: unknown[]) {
   const timestamp = new Date().toISOString();

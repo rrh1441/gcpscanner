@@ -89,4 +89,4 @@ RUN pnpm build
 
 RUN mkdir -p /tmp && chmod 777 /tmp
 EXPOSE 3000
-CMD ["npx","tsx","apps/api-main/server.ts"]
+CMD ["npx","tsx","apps/workers/worker-pubsub.ts"]

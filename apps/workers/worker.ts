@@ -67,7 +67,7 @@ const TIER_1_MODULES = [
   'backend_exposure_scanner'
 ];
 
-async function processScan(job: ScanJob) {
+export async function processScan(job: ScanJob) {
   const { scanId, companyName, domain } = job;
   
   log(`Processing scan ${scanId} for ${companyName} (${domain})`);
@@ -194,45 +194,5 @@ async function processScan(job: ScanJob) {
   }
 }
 
-// Main entry point for Cloud Run Job
-async function main() {
-  log('GCP Scanner starting...');
-  
-  // Validate environment
-  if (!process.env.SHODAN_API_KEY) {
-    log('ERROR: SHODAN_API_KEY not configured');
-    process.exit(1);
-  }
-  
-  // Read scan data from environment variable (set by Cloud Tasks)
-  const scanData = process.env.SCAN_DATA;
-  
-  if (!scanData) {
-    log('ERROR: No SCAN_DATA environment variable provided');
-    process.exit(1);
-  }
-  
-  try {
-    const { domain, companyName } = JSON.parse(scanData);
-    const scanId = `scan-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-    
-    log('Processing scan from Cloud Tasks:', { scanId, domain, companyName });
-    
-    // Process scan
-    await processScan({
-      scanId,
-      companyName,
-      domain,
-      createdAt: new Date().toISOString()
-    });
-    
-    log('Job completed successfully');
-    process.exit(0);
-  } catch (error) {
-    log('ERROR:', error);
-    process.exit(1);
-  }
-}
-
-// Run the job
-main();
+// Export for use by worker-pubsub.ts
+// The main entry point is now handled by worker-pubsub.ts which listens to Pub/Sub messages

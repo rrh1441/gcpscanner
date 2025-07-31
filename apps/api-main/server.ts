@@ -4,11 +4,11 @@ import fastifyStatic from '@fastify/static';
 import fastifyCors from '@fastify/cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { UpstashQueue } from '../workers/core/queue.js';
+import { PubSub } from '@google-cloud/pubsub';
+import { Firestore } from '@google-cloud/firestore';
 import { nanoid } from 'nanoid';
-import { pool } from '../workers/core/artifactStore.js';
+import { pool } from '../workers/core/artifactStoreGCP.js';
 import { normalizeDomain } from '../workers/util/domainNormalizer.js';
-import axios from 'axios';
 
 config();
 
@@ -16,309 +16,118 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const fastify = Fastify({ logger: true });
-const queue = new UpstashQueue(process.env.REDIS_URL!);
+const pubsub = new PubSub();
+const firestore = new Firestore();
 
-// Queue monitoring constants
-const WORKER_GROUP = 'scanner_worker';
-const POLL_INTERVAL_MS = 15_000; // 15 seconds
+// GCP constants
+const SCAN_JOBS_TOPIC = 'scan-jobs';
+const REPORT_GENERATION_TOPIC = 'report-generation';
 
 function log(...args: any[]) {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}]`, ...args);
 }
 
-// Queue-depth-driven worker auto-scaling
-async function getQueueDepth(): Promise<number> {
+// GCP Pub/Sub message publishing
+async function publishScanJob(job: any): Promise<void> {
   try {
-    const depth = await queue.redis.llen('scan.jobs');
-    return depth || 0;
-  } catch (error) {
-    log('[queue-monitor] Error getting queue depth:', (error as Error).message);
-    return 0;
-  }
-}
-
-async function getRunningWorkers(): Promise<number> {
-  try {
-    const token = process.env.FLY_API_TOKEN;
-    if (!token) {
-      log('[queue-monitor] FLY_API_TOKEN not set – cannot detect running workers');
-      return 0;
-    }
-
-    const APP = process.env.FLY_APP_NAME ?? 'dealbrief-scanner';
-    const GROUP = 'scanner_worker';
+    const topic = pubsub.topic(SCAN_JOBS_TOPIC);
+    const messageBuffer = Buffer.from(JSON.stringify(job));
     
-    const response = await fetch(`https://api.machines.dev/v1/apps/${APP}/machines`, {
-      headers: { Authorization: `Bearer ${token}` }
+    const messageId = await topic.publishMessage({
+      data: messageBuffer,
+      attributes: {
+        scanId: job.scanId,
+        domain: job.domain
+      }
     });
     
-    if (!response.ok) {
-      log('[queue-monitor] Failed to fetch machines:', response.status, await response.text());
-      return 0;
-    }
-    
-    const machines = await response.json();
-    const runningWorkers = machines.filter((m: any) => 
-      m.process_group === GROUP && m.state === 'started'
-    );
-    
-    log(`[queue-monitor] Found ${runningWorkers.length} running workers`);
-    return runningWorkers.length;
+    log(`[pubsub] Published scan job ${job.scanId} with message ID: ${messageId}`);
   } catch (error) {
-    log('[queue-monitor] Error getting running workers:', (error as Error).message);
-    return 0;
+    log('[pubsub] Error publishing scan job:', (error as Error).message);
+    throw error;
   }
 }
 
-async function spawnWorkers(backlog: number): Promise<void> {
-  const token = process.env.FLY_API_TOKEN;
-  if (!token) {
-    log('[queue-monitor] FLY_API_TOKEN missing – skipping scale');
-    return;
-  }
-
-  const APP = process.env.FLY_APP_NAME ?? 'dealbrief-scanner';
-  const GROUP = 'scanner_worker';
-  const REGION = 'sea';
-  const MAX_PAR = 10;
-  const BASE_URL = `https://api.machines.dev/v1/apps/${APP}/machines`;
-  const HDRS = { Authorization: `Bearer ${token}` };
-  // Use the exact image that's currently running (injected by Fly)
-  const WORKER_IMAGE = process.env.FLY_IMAGE_REF || 'registry.fly.io/dealbrief-scanner:latest';
-
-  log(`[queue-monitor] Scaling to handle ${backlog} jobs...`);
-
+// Store scan job in Firestore
+async function createScanRecord(job: any): Promise<void> {
   try {
-    // 1 — list existing Machines
-    const res = await fetch(BASE_URL, { headers: HDRS });
-    if (!res.ok) {
-      log('[queue-monitor] list failed', res.status, await res.text());
-      return;
-    }
-    const all = await res.json();
-
-    const isWorker = (m: any) => m.process_group === GROUP;
-    const running = all.filter((m: any) => isWorker(m) && m.state === 'started');
-    const stopped = all.filter((m: any) => isWorker(m) && m.state === 'stopped');
-
-    const want = Math.min(backlog, MAX_PAR);        // cap parallelism
-    const need = want - running.length;
-    
-    log(`[queue-monitor] Current: ${running.length} running, ${stopped.length} stopped, want ${want}, need ${need}`);
-    
-    if (need <= 0) {
-      log('[queue-monitor] Already have enough workers');
-      return;                          // already enough
-    }
-
-    // 2 — Clean up stopped machines first to free up slots
-    if (stopped.length > 0) {
-      log(`[queue-monitor] Cleaning up ${stopped.length} stopped workers before creating new ones`);
-      for (const m of stopped) {
-        try {
-          const destroyRes = await fetch(`${BASE_URL}/${m.id}?force=true`, {
-            method: 'DELETE',
-            headers: HDRS
-          });
-          if (destroyRes.ok) {
-            log(`[queue-monitor] ✅ Destroyed stopped worker ${m.id}`);
-          } else {
-            log(`[queue-monitor] ❌ Failed to destroy worker ${m.id}: ${destroyRes.status}`);
-          }
-        } catch (err) {
-          log(`[queue-monitor] Error destroying worker ${m.id}:`, (err as Error).message);
-        }
-      }
-    }
-
-    // 3 — create new machines if still needed (no template required!)
-    for (let i = 0; i < need; i++) {
-      const machineConfig = {
-        name: `scanner_worker_${Date.now()}_${i}`,
-        region: REGION,
-        config: {
-          image: WORKER_IMAGE,
-          guest: { cpu_kind: 'performance', cpus: 2, memory_mb: 4096 },
-          env: { 
-            FLY_PROCESS_GROUP: GROUP,
-            AXE_MAX_PAGES: '3',
-            AXE_SKIP_IF_UNCHANGED: 'true',
-            NODE_TLS_REJECT_UNAUTHORIZED: '0',
-            NUCLEI_BASELINE_TIMEOUT_MS: '8000',
-            NUCLEI_CONCURRENCY: '48',
-            NUCLEI_RETRIES: '0',
-            NUCLEI_RUN_HEADLESS: 'false',
-            PRIMARY_REGION: 'sea',
-            SERPER_MAX_DOWNLOAD_BYTES: '0'
-          },
-          processes: [
-            { cmd: ['npx', 'tsx', 'apps/workers/worker.ts'] }
-          ],
-          services: [
-            {
-              autostop: true,
-              autostart: true,
-              min_machines_running: 0
-            }
-          ],
-          restart: { policy: 'on-failure', max_retries: 10 }
-        }
-      };
-
-      const r = await fetch(BASE_URL, {
-        method: 'POST',
-        headers: { ...HDRS, 'Content-Type': 'application/json' },
-        body: JSON.stringify(machineConfig)
-      });
-      
-      if (r.ok) {
-        const newMachine = await r.json();
-        log(`[queue-monitor] ✅ Created new worker ${newMachine.id}`);
-      } else {
-        log(`[queue-monitor] ❌ Failed to create worker: ${r.status} ${await r.text()}`);
-      }
-    }
-
-  } catch (error) {
-    log('[queue-monitor] Error scaling workers:', (error as Error).message);
-  }
-}
-
-async function shutdownWorkers(count: number): Promise<void> {
-  // Let Fly handle worker shutdown automatically when idle
-  // No need to manually stop workers - they'll auto-stop when no jobs
-  log(`[queue-monitor] Letting Fly auto-shutdown ${count} idle workers...`);
-}
-
-async function cleanupStoppedWorkers(): Promise<void> {
-  const token = process.env.FLY_API_TOKEN;
-  if (!token) {
-    return;
-  }
-
-  const APP = process.env.FLY_APP_NAME ?? 'dealbrief-scanner';
-  const GROUP = 'scanner_worker';
-  const BASE_URL = `https://api.machines.dev/v1/apps/${APP}/machines`;
-  const HDRS = { Authorization: `Bearer ${token}` };
-
-  try {
-    const res = await fetch(BASE_URL, { headers: HDRS });
-    if (!res.ok) {
-      log('[queue-monitor] Failed to list machines for cleanup:', res.status);
-      return;
-    }
-    
-    const machines = await res.json();
-    const stoppedWorkers = machines.filter((m: any) => 
-      m.process_group === GROUP && m.state === 'stopped'
-    );
-    
-    if (stoppedWorkers.length === 0) {
-      return;
-    }
-    
-    log(`[queue-monitor] Found ${stoppedWorkers.length} stopped scanner_worker machines to clean up`);
-    
-    // Destroy all stopped scanner_worker machines
-    for (const machine of stoppedWorkers) {
-      try {
-        const destroyRes = await fetch(`${BASE_URL}/${machine.id}?force=true`, {
-          method: 'DELETE',
-          headers: HDRS
-        });
-        
-        if (destroyRes.ok) {
-          log(`[queue-monitor] ✅ Destroyed stopped worker ${machine.id}`);
-        } else {
-          log(`[queue-monitor] ❌ Failed to destroy worker ${machine.id}: ${destroyRes.status}`);
-        }
-      } catch (err) {
-        log(`[queue-monitor] Error destroying worker ${machine.id}:`, (err as Error).message);
-      }
-    }
-  } catch (error) {
-    log('[queue-monitor] Error during cleanup:', (error as Error).message);
-  }
-}
-
-// Queue monitoring cron job - runs every minute
-async function queueMonitorCron(): Promise<void> {
-  try {
-    const queueDepth = await getQueueDepth();
-    const runningWorkers = await getRunningWorkers();
-    const neededWorkers = Math.min(queueDepth, 10); // Test limit: 10 workers
-
-    log(`[queue-monitor] Queue: ${queueDepth} jobs, Workers: ${runningWorkers} running, ${neededWorkers} needed`);
-
-    if (neededWorkers > runningWorkers) {
-      await spawnWorkers(neededWorkers - runningWorkers);
-    }
-    
-    // Clean up stopped workers to prevent hitting machine limit
-    await cleanupStoppedWorkers();
-
-  } catch (error) {
-    log('[queue-monitor] Error in monitoring:', (error as Error).message);
-  }
-}
-
-// Legacy function - now handled by queue monitor
-async function ensureScannerWorkerRunning(): Promise<void> {
-  if (!process.env.FLY_API_TOKEN) {
-    log('[api] FLY_API_TOKEN not set - cannot start workers, relying on auto-scaling');
-    return;
-  }
-  
-  const APP = process.env.FLY_APP_NAME || 'dealbrief-scanner';
-  const BASE_URL = `https://api.machines.dev/v1/apps/${APP}/machines`;
-  const HDRS = { Authorization: `Bearer ${process.env.FLY_API_TOKEN}` };
-  
-  try {
-    // Get all scanner worker machines
-    const response = await fetch(BASE_URL, { headers: HDRS });
-    if (!response.ok) {
-      log('[api] Failed to fetch machines for worker startup');
-      return;
-    }
-    
-    const machines = await response.json();
-    const scannerWorkers = machines.filter((m: { process_group: string; state: string }) => 
-      m.process_group === 'scanner_worker'
-    );
-    
-    const running = scannerWorkers.filter((m: { state: string }) => m.state === 'started');
-    const stopped = scannerWorkers.filter((m: { state: string }) => m.state === 'stopped');
-    
-    if (running.length > 0) {
-      log(`[api] Scanner worker already running (${running.length} active)`);
-      return;
-    }
-    
-    if (stopped.length === 0) {
-      log('[api] No scanner worker machines found - relying on Fly auto-scaling');
-      return;
-    }
-    
-    // Start the first stopped worker
-    const workerToStart = stopped[0];
-    log(`[api] Starting stopped scanner worker: ${workerToStart.id}`);
-    
-    const startResponse = await fetch(`${BASE_URL}/${workerToStart.id}/start`, {
-      method: 'POST',
-      headers: HDRS,
+    await firestore.collection('scans').doc(job.scanId).set({
+      scan_id: job.scanId,
+      company_name: job.companyName,
+      domain: job.domain,
+      original_domain: job.originalDomain,
+      tags: job.tags || [],
+      status: 'queued',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     });
     
-    if (startResponse.ok) {
-      log(`[api] ✅ Successfully started scanner worker ${workerToStart.id}`);
-    } else {
-      log(`[api] ❌ Failed to start scanner worker: ${startResponse.status} ${await startResponse.text()}`);
-    }
-    
+    log(`[firestore] Created scan record for ${job.scanId}`);
   } catch (error) {
-    log('[api] Error starting scanner worker:', (error as Error).message);
+    log('[firestore] Error creating scan record:', (error as Error).message);
+    throw error;
   }
 }
+
+// Get scan status from Firestore
+async function getScanStatus(scanId: string): Promise<any> {
+  try {
+    const doc = await firestore.collection('scans').doc(scanId).get();
+    if (!doc.exists) {
+      return null;
+    }
+    return doc.data();
+  } catch (error) {
+    log('[firestore] Error getting scan status:', (error as Error).message);
+    return null;
+  }
+}
+
+// Get artifacts from Cloud Storage (via GCP artifact store)
+async function getScanArtifacts(scanId: string): Promise<any[]> {
+  try {
+    // Query artifacts from PostgreSQL with GCP artifact store
+    const artifactsResult = await pool.query(`
+      SELECT id, type, val_text, severity, src_url, sha256, mime, created_at, meta
+      FROM artifacts 
+      WHERE meta->>'scan_id' = $1
+      ORDER BY severity DESC, created_at DESC
+    `, [scanId]);
+    
+    return artifactsResult.rows;
+  } catch (error) {
+    log('[artifacts] Error getting scan artifacts:', (error as Error).message);
+    throw error;
+  }
+}
+
+// Health check for GCP services
+async function healthCheck(): Promise<any> {
+  try {
+    // Test Pub/Sub connectivity
+    const topic = pubsub.topic(SCAN_JOBS_TOPIC);
+    const [exists] = await topic.exists();
+    
+    // Test Firestore connectivity  
+    await firestore.collection('_health').doc('test').get();
+    
+    return {
+      status: 'healthy',
+      pubsub: exists ? 'connected' : 'topic_missing',
+      firestore: 'connected',
+      timestamp: new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      status: 'unhealthy',
+      error: (error as Error).message,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// No worker management needed - GCP Cloud Run handles scaling automatically
 
 // Register CORS for frontend access
 fastify.register(fastifyCors, {
@@ -341,7 +150,7 @@ fastify.register(fastifyStatic, {
 
 // Health check endpoint
 fastify.get('/health', async (request, reply) => {
-  return { status: 'ok', timestamp: new Date().toISOString() };
+  return await healthCheck();
 });
 
 // Create a new scan (main endpoint)
@@ -379,7 +188,7 @@ fastify.post('/scan', async (request, reply) => {
     }
     
     const job = {
-      id: scanId,
+      scanId,
       companyName,
       domain: normalizedDomain,
       originalDomain: rawDomain,
@@ -390,17 +199,19 @@ fastify.post('/scan', async (request, reply) => {
     log(`[api] Attempting to create scan job ${scanId} for ${companyName} (${normalizedDomain}) [original: ${rawDomain}]`);
     
     try {
-      await queue.addJob(scanId, job);
-      log(`[api] ✅ Successfully created scan job ${scanId} for ${companyName}`);
+      // Store in Firestore
+      await createScanRecord(job);
       
-      // Ensure scanner worker is running to process the job
-      await ensureScannerWorkerRunning();
-    } catch (queueError) {
-      log('[api] CRITICAL: Failed to add job to queue:', (queueError as Error).message);
+      // Publish to Pub/Sub
+      await publishScanJob(job);
+      
+      log(`[api] ✅ Successfully created scan job ${scanId} for ${companyName}`);
+    } catch (error) {
+      log('[api] CRITICAL: Failed to create scan job:', (error as Error).message);
       reply.status(500);
       return { 
-        error: 'Failed to queue scan job', 
-        details: `Queue operation failed: ${(queueError as Error).message}`,
+        error: 'Failed to create scan job', 
+        details: `GCP operation failed: ${(error as Error).message}`,
         scanId: null
       };
     }
@@ -462,7 +273,7 @@ fastify.post('/scans', async (request, reply) => {
     }
     
     const job = {
-      id: scanId,
+      scanId,
       companyName,
       domain: normalizedDomain,
       originalDomain: rawDomain,
@@ -473,17 +284,19 @@ fastify.post('/scans', async (request, reply) => {
     log(`[api] Attempting to create scan job ${scanId} for ${companyName} (${normalizedDomain}) [original: ${rawDomain}]`);
     
     try {
-      await queue.addJob(scanId, job);
-      log(`[api] ✅ Successfully created scan job ${scanId} for ${companyName}`);
+      // Store in Firestore
+      await createScanRecord(job);
       
-      // Ensure scanner worker is running to process the job
-      await ensureScannerWorkerRunning();
-    } catch (queueError) {
-      log('[api] CRITICAL: Failed to add job to queue:', (queueError as Error).message);
+      // Publish to Pub/Sub
+      await publishScanJob(job);
+      
+      log(`[api] ✅ Successfully created scan job ${scanId} for ${companyName}`);
+    } catch (error) {
+      log('[api] CRITICAL: Failed to create scan job:', (error as Error).message);
       reply.status(500);
       return { 
-        error: 'Failed to queue scan job', 
-        details: `Queue operation failed: ${(queueError as Error).message}`,
+        error: 'Failed to create scan job', 
+        details: `GCP operation failed: ${(error as Error).message}`,
         scanId: null
       };
     }
@@ -513,7 +326,7 @@ fastify.post('/scans', async (request, reply) => {
 fastify.get('/scan/:scanId/status', async (request, reply) => {
   const { scanId } = request.params as { scanId: string };
   
-  const status = await queue.getStatus(scanId);
+  const status = await getScanStatus(scanId);
   
   if (!status) {
     reply.status(404);
@@ -533,24 +346,19 @@ fastify.get('/scan/:scanId/artifacts', async (request, reply) => {
   try {
     log(`[api] Retrieving artifacts for scan: ${scanId}`);
     
-    const artifactsResult = await pool.query(`
-      SELECT id, type, val_text, severity, src_url, sha256, mime, created_at, meta
-      FROM artifacts 
-      WHERE meta->>'scan_id' = $1
-      ORDER BY severity DESC, created_at DESC
-    `, [scanId]);
+    const artifacts = await getScanArtifacts(scanId);
     
-    log(`[api] Found ${artifactsResult.rows.length} artifacts for scan ${scanId}`);
+    log(`[api] Found ${artifacts.length} artifacts for scan ${scanId}`);
     
-    if (artifactsResult.rows.length === 0) {
+    if (artifacts.length === 0) {
       reply.status(404);
       return { error: 'No artifacts found for this scan' };
     }
 
     return {
       scanId,
-      artifacts: artifactsResult.rows,
-      count: artifactsResult.rows.length,
+      artifacts,
+      count: artifacts.length,
       retrievedAt: new Date().toISOString()
     };
   } catch (error) {
@@ -657,7 +465,11 @@ fastify.post('/scan/bulk', async (request, reply) => {
           createdAt: new Date().toISOString()
         };
 
-        await queue.addJob(scanId, job);
+        // Store in Firestore
+        await createScanRecord(job);
+        
+        // Publish to Pub/Sub
+        await publishScanJob(job);
         
         results.push({
           scanId,
@@ -680,7 +492,7 @@ fastify.post('/scan/bulk', async (request, reply) => {
       }
     }
 
-    // Queue monitor will automatically scale workers based on queue depth
+    // GCP Cloud Run will automatically handle scaling
 
     return {
       total: companies.length,
@@ -798,7 +610,11 @@ fastify.register(async function (fastify) {
             createdAt: new Date().toISOString()
           };
 
-          await queue.addJob(scanId, job);
+          // Store in Firestore
+        await createScanRecord(job);
+        
+        // Publish to Pub/Sub
+        await publishScanJob(job);
           
           results.push({
             scanId,
@@ -821,7 +637,7 @@ fastify.register(async function (fastify) {
         }
       }
 
-      // Queue monitor will automatically scale workers based on queue depth
+      // GCP Cloud Run will automatically handle scaling
 
       return {
         filename: data.filename,
@@ -875,7 +691,7 @@ fastify.post('/api/scans', async (request, reply) => {
     }
     
     const job = {
-      id: scanId,
+      scanId,
       companyName,
       domain: normalizedDomain,
       originalDomain: rawDomain,
@@ -886,14 +702,19 @@ fastify.post('/api/scans', async (request, reply) => {
     log(`[api] Attempting to create scan job ${scanId} for ${companyName} (${normalizedDomain}) [original: ${rawDomain}] via /api/scans`);
     
     try {
-      await queue.addJob(scanId, job);
+      // Store in Firestore
+      await createScanRecord(job);
+      
+      // Publish to Pub/Sub
+      await publishScanJob(job);
+      
       log(`[api] ✅ Successfully created scan job ${scanId} for ${companyName} via /api/scans`);
-    } catch (queueError) {
-      log('[api] CRITICAL: Failed to add job to queue:', (queueError as Error).message);
+    } catch (error) {
+      log('[api] CRITICAL: Failed to create scan job:', (error as Error).message);
       reply.status(500);
       return { 
-        error: 'Failed to queue scan job', 
-        details: `Queue operation failed: ${(queueError as Error).message}`,
+        error: 'Failed to create scan job', 
+        details: `GCP operation failed: ${(error as Error).message}`,
         scanId: null
       };
     }
@@ -924,7 +745,7 @@ fastify.get('/api/scans/:scanId', async (request, reply) => {
   const { scanId } = request.params as { scanId: string };
   
   try {
-    const status = await queue.getStatus(scanId);
+    const status = await getScanStatus(scanId);
     
     if (!status) {
       reply.status(404);
@@ -942,14 +763,14 @@ fastify.get('/api/scans/:scanId', async (request, reply) => {
   }
 });
 
-// Manual sync trigger endpoint (for troubleshooting)
+// Manual sync trigger endpoint (deprecated - GCP handles scaling automatically)
 fastify.post('/admin/sync', async (request, reply) => {
   try {
-    // This endpoint can be used to manually trigger sync worker restart
+    // GCP Cloud Run handles scaling automatically
     return {
-      message: 'Sync trigger endpoint - restart sync worker manually via fly machine restart',
+      message: 'This endpoint is deprecated. GCP Cloud Run handles worker scaling automatically.',
       timestamp: new Date().toISOString(),
-      instructions: 'Use: fly machine restart 148e212fe19238'
+      migration_status: 'Migrated to GCP Cloud Run'
     };
   } catch (error) {
     log('[api] Error in /admin/sync:', (error as Error).message);
@@ -958,77 +779,63 @@ fastify.post('/admin/sync', async (request, reply) => {
   }
 });
 
-// Debug endpoint to manually trigger queue monitor
-fastify.post('/admin/debug-queue', async (request, reply) => {
+// Debug endpoint to test GCP services
+fastify.post('/admin/debug-gcp', async (request, reply) => {
   try {
-    log('[api] Manual queue monitor trigger requested');
+    log('[api] GCP services debug requested');
     
-    const queueDepth = await getQueueDepth();
-    const runningWorkers = await getRunningWorkers();
-    const neededWorkers = Math.min(queueDepth, 10);
+    const health = await healthCheck();
     
-    log(`[api] DEBUG - Queue: ${queueDepth} jobs, Workers: ${runningWorkers} running, ${neededWorkers} needed`);
-    
-    let result = {
-      queueDepth,
-      runningWorkers,
-      neededWorkers,
-      action: 'none',
-      error: null as string | null
+    // Test publishing a debug message
+    const testJob = {
+      scanId: `debug-${Date.now()}`,
+      companyName: 'Debug Test',
+      domain: 'example.com',
+      originalDomain: 'example.com',
+      tags: ['debug'],
+      createdAt: new Date().toISOString()
     };
     
-    if (neededWorkers > runningWorkers) {
-      result.action = `spawn ${neededWorkers - runningWorkers} workers`;
-      try {
-        await spawnWorkers(neededWorkers - runningWorkers);
-        log('[api] DEBUG - Successfully spawned workers');
-      } catch (error) {
-        result.error = (error as Error).message;
-        log('[api] DEBUG - Error spawning workers:', (error as Error).message);
-      }
+    try {
+      await publishScanJob(testJob);
+      health.pubsub_test = 'success';
+    } catch (error) {
+      health.pubsub_test = `failed: ${(error as Error).message}`;
     }
     
-    return result;
+    return health;
   } catch (error) {
-    log('[api] Error in debug queue trigger:', (error as Error).message);
+    log('[api] Error in GCP debug:', (error as Error).message);
     reply.status(500);
-    return { error: 'Failed to debug queue', details: (error as Error).message };
+    return { error: 'Failed to debug GCP', details: (error as Error).message };
   }
 });
 
-// Debug endpoint to see actual machine data
-fastify.get('/admin/debug-machines', async (request, reply) => {
+// Debug endpoint to see GCP service status
+fastify.get('/admin/debug-services', async (request, reply) => {
   try {
-    const token = process.env.FLY_API_TOKEN;
-    if (!token) {
-      return { error: 'No FLY_API_TOKEN' };
+    const result = await healthCheck();
+    
+    // Add more GCP service information
+    try {
+      const scanTopic = pubsub.topic(SCAN_JOBS_TOPIC);
+      const [metadata] = await scanTopic.getMetadata();
+      result.scan_topic_info = {
+        name: metadata.name,
+        labels: metadata.labels
+      };
+    } catch (error) {
+      result.scan_topic_error = (error as Error).message;
     }
-
-    const APP = process.env.FLY_APP_NAME ?? 'dealbrief-scanner';
-    const response = await fetch(`https://api.machines.dev/v1/apps/${APP}/machines`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
     
-    if (!response.ok) {
-      return { error: 'Failed to fetch machines', status: response.status };
+    try {
+      const collections = await firestore.listCollections();
+      result.firestore_collections = collections.map(c => c.id);
+    } catch (error) {
+      result.firestore_error = (error as Error).message;
     }
     
-    const machines = await response.json();
-    
-    // Return the first scanner_worker machine data for debugging
-    const scannerMachine = machines.find((m: any) => m.id === '286565eb5406d8');
-    
-    return {
-      total_machines: machines.length,
-      scanner_machine: scannerMachine ? {
-        id: scannerMachine.id,
-        state: scannerMachine.state,
-        config_processes: scannerMachine.config?.processes,
-        config_metadata: scannerMachine.config?.metadata,
-        config_env: scannerMachine.config?.env,
-        full_config: scannerMachine.config
-      } : 'not found'
-    };
+    return result;
   } catch (error) {
     return { error: (error as Error).message };
   }
@@ -1049,11 +856,11 @@ fastify.post('/scan/:id/callback', async (request, reply) => {
 const start = async () => {
   try {
     await fastify.listen({ port: 3000, host: '0.0.0.0' });
-    log('[api] Server listening on port 3000');
+    log('[api] GCP API Server listening on port 3000');
     
-    // Start queue monitoring in the API process
-    log('[api] Starting queue monitoring every 15 seconds');
-    setInterval(queueMonitorCron, POLL_INTERVAL_MS);
+    // Test GCP connectivity on startup
+    const health = await healthCheck();
+    log('[api] GCP Services Health:', health);
     
   } catch (err) {
     fastify.log.error(err);

@@ -1,119 +1,228 @@
-# Next Steps for GCP Scanner Testing
+# GCP Scanner Testing Guide
 
 ## Migration Status ✅
-- ✅ **Fly.io/Supabase Infrastructure Removed**: All worker files migrated to GCP
-- ✅ **Docker Configuration**: Clean GCP-only Dockerfile 
-- ✅ **Core Services**: Using GCP Pub/Sub, Cloud Storage, Artifact Registry
-- ✅ **Remaining References**: Only legitimate security scanning patterns (detecting exposed Supabase/Fly endpoints)
+- ✅ **Fly.io/Redis Infrastructure PURGED**: All Fly.io and Upstash/Redis code removed
+- ✅ **Server.ts Rewritten**: Pure GCP Pub/Sub + Firestore implementation
+- ✅ **Docker Configuration**: Updated to run worker-pubsub.ts (Pub/Sub listener)
+- ✅ **Core Services**: GCP Pub/Sub, Firestore, Cloud Storage, Cloud Run Jobs
+- ✅ **Queue System**: Pub/Sub → worker-pubsub.ts → worker.ts pipeline
 
-## Ready for Full Scan Testing
+## Module Execution Architecture 🔄
 
-### 1. Verify Environment Setup
+The scanner uses a **three-phase execution model** to handle module dependencies:
+
+### Phase 1: Independent Parallel Modules
+These run simultaneously since they don't depend on other modules:
+- `breach_directory_probe` - Data breach correlation
+- `shodan` - Internet device scanning  
+- `dns_twist` - Domain typosquatting detection
+- `document_exposure` - Sensitive document discovery
+- `tls_scan` - SSL/TLS configuration analysis
+- `spf_dmarc` - Email security policy validation
+- `config_exposure` - Configuration file exposure
+
+### Phase 2: Endpoint Discovery (Blocking)
+- `endpoint_discovery` - **Must complete first** as it provides data for dependent modules
+
+### Phase 3: Dependent Modules (Parallel)
+These modules run after endpoint discovery provides necessary data:
+- `nuclei` - Uses discovered endpoints for vulnerability scanning
+- `tech_stack_scan` - Analyzes discovered endpoints for technology identification
+- `abuse_intel_scan` - Correlates findings with threat intelligence
+- `client_secret_scanner` - Scans discovered assets for exposed credentials
+- `backend_exposure_scanner` - Analyzes backend services found in endpoint discovery
+- `accessibility_scan` - Tests discovered web interfaces
+
+### Phase 4: Final Correlation
+- `asset_correlator` - Runs after all modules to correlate and enrich findings
+
+## Current Architecture Flow
+```
+Pub/Sub Message → Cloud Run Job (worker-pubsub.ts) → processScan() → Firestore + Cloud Storage
+```
+
+## Testing Strategy
+
+### 1. Deploy Updated Container
 ```bash
-# Check current job configuration
+# Build and push the updated container (now runs worker-pubsub.ts)
+gcloud builds submit --tag us-central1-docker.pkg.dev/precise-victory-467219-s4/dealbrief/scanner-worker:latest \
+    --project=precise-victory-467219-s4
+
+# Update the Cloud Run Job with new image
+gcloud run jobs replace-image scanner-job \
+    --image=us-central1-docker.pkg.dev/precise-victory-467219-s4/dealbrief/scanner-worker:latest \
+    --region=us-central1 \
+    --project=precise-victory-467219-s4
+```
+
+### 2. Environment Verification
+```bash
+# Verify Pub/Sub topic and subscription exist
+gcloud pubsub topics describe scan-jobs \
+    --project=precise-victory-467219-s4
+    
+gcloud pubsub subscriptions describe scan-jobs-subscription \
+    --project=precise-victory-467219-s4
+
+# Check Cloud Run Job configuration
 gcloud run jobs describe scanner-job \
     --region=us-central1 \
     --project=precise-victory-467219-s4
 
-# Ensure secrets are accessible
+# Verify secrets are accessible
 gcloud secrets versions list shodan-api-key \
     --project=precise-victory-467219-s4
 ```
 
-### 2. Set Up Pub/Sub Trigger (If Not Done)
+### 3. Deploy as Cloud Run Service (Long-Running Pub/Sub Listener)
+
+**ARCHITECTURE CHANGE**: Deploy as Cloud Run Service to run continuous Pub/Sub listener:
+
 ```bash
-# Create or update the Eventarc trigger
-gcloud eventarc triggers create scan-trigger \
-    --destination-run-job=scanner-job \
-    --destination-run-region=us-central1 \
-    --location=us-central1 \
+# Deploy worker-pubsub.ts as a Cloud Run Service that listens continuously
+gcloud run deploy scanner-service \
+    --image=us-central1-docker.pkg.dev/precise-victory-467219-s4/dealbrief/scanner-worker:latest \
+    --region=us-central1 \
     --project=precise-victory-467219-s4 \
-    --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished" \
-    --service-account="scanner-worker-sa@precise-victory-467219-s4.iam.gserviceaccount.com" \
-    --transport-topic=scan-jobs
+    --service-account=scanner-worker-sa@precise-victory-467219-s4.iam.gserviceaccount.com \
+    --memory=4Gi \
+    --cpu=2 \
+    --port=8080 \
+    --set-env-vars=RUNTIME_MODE=gcp \
+    --set-secrets=SHODAN_API_KEY=shodan-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,ABUSEIPDB_API_KEY=abuseipdb-api-key:latest,CAPTCHA_API_KEY=captcha-api-key:latest,CENSYS_PAT=censys-api-token:latest,LEAKCHECK_API_KEY=leakcheck-api-key:latest,SERPER_KEY=serper-key:latest,WHOXY_API_KEY=whoxy-api-key:latest \
+    --min-instances=1 \
+    --max-instances=3 \
+    --allow-unauthenticated
+
+# Check service status
+gcloud run services describe scanner-service \
+    --region=us-central1 \
+    --project=precise-victory-467219-s4
 ```
 
-### 3. Test Complete Scan Flow
+### 4. Test Pub/Sub → Scanner Pipeline
+
+#### Basic Connectivity Test
 ```bash
-# Test with a simple domain first
+# Test simple scan job via Pub/Sub
 gcloud pubsub topics publish scan-jobs \
     --message='{
-      "scanId": "test-simple-' $(date +%s)'",
+      "scanId": "test-'$(date +%s)'",
       "companyName": "Test Company",
       "domain": "httpbin.org",
       "originalDomain": "httpbin.org",
-      "tags": ["test", "simple"],
+      "tags": ["test"],
       "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
     }' \
     --project=precise-victory-467219-s4
 
-# Test with a more complex domain
+# Monitor Cloud Run Service logs (not job logs!)
+gcloud logging tail 'resource.type="cloud_run_revision" resource.labels.service_name="scanner-service"' \
+    --project=precise-victory-467219-s4
+```
+
+#### Module Execution Phases Test
+```bash
+# Test with a domain that will trigger all modules
 gcloud pubsub topics publish scan-jobs \
     --message='{
-      "scanId": "test-complex-' $(date +%s)'",
-      "companyName": "Example Corp",
+      "scanId": "full-test-'$(date +%s)'",
+      "companyName": "Full Module Test",
       "domain": "example.com",
-      "originalDomain": "example.com", 
-      "tags": ["test", "full"],
+      "originalDomain": "example.com",
+      "tags": ["test", "all-modules"],
       "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
     }' \
     --project=precise-victory-467219-s4
+
+# Monitor execution phases
+gcloud logging tail 'resource.type="cloud_run_revision"' \
+    --project=precise-victory-467219-s4 --filter='textPayload:("Endpoint discovery completed" OR "Asset correlation completed" OR "completed:")'
 ```
 
-### 4. Monitor Test Results
+#### Firestore Verification
 ```bash
-# Watch job execution logs in real-time
-gcloud logging tail 'resource.type="cloud_run_job" resource.labels.job_name="scanner-job"' \
-    --project=precise-victory-467219-s4
+# Check if scan records are being created in Firestore
+gcloud firestore documents list scans --project=precise-victory-467219-s4 --limit=5
 
-# Check for errors specifically
-gcloud logging read 'resource.type="cloud_run_job" resource.labels.job_name="scanner-job" severity>=ERROR' \
-    --project=precise-victory-467219-s4 --limit=20 --format=json
+# Check specific scan status
+SCAN_ID="test-12345"  # Replace with actual scan ID from above
+gcloud firestore documents describe scans/${SCAN_ID} --project=precise-victory-467219-s4
 ```
 
-### 5. Validate Scan Results
-```bash
-# Check if results are being stored in Cloud Storage
-gsutil ls gs://dealbrief-scanner-artifacts/scans/
+### 5. Monitor & Debug
 
-# Look for job completion logs
-gcloud logging read 'resource.type="cloud_run_job" textPayload:"Scan completed"' \
+#### Service Health Check
+```bash
+# Check if Cloud Run Service is healthy
+gcloud run services describe scanner-service \
+    --region=us-central1 \
+    --project=precise-victory-467219-s4 \
+    --format='value(status.conditions[0].status,status.conditions[0].message)'
+
+# Monitor service logs for errors
+gcloud logging read 'resource.type="cloud_run_revision" resource.labels.service_name="scanner-service" severity>=ERROR' \
     --project=precise-victory-467219-s4 --limit=10
 ```
 
-### 6. Performance Testing
+#### Module Execution Monitoring
 ```bash
-# Test concurrent scans
-for i in {1..3}; do
-  gcloud pubsub topics publish scan-jobs \
-    --message='{
-      "scanId": "concurrent-test-'$i'-'$(date +%s)'",
-      "companyName": "Concurrent Test '$i'",
-      "domain": "httpbin.org",
-      "originalDomain": "httpbin.org",
-      "tags": ["performance", "concurrent"],
-      "createdAt": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
-    }' \
-    --project=precise-victory-467219-s4 &
-done
-wait
+# Monitor execution phases to verify dependency handling
+gcloud logging tail 'resource.type="cloud_run_revision" resource.labels.service_name="scanner-service"' \
+    --project=precise-victory-467219-s4 --filter='textPayload:("completed:" OR "Endpoint discovery completed" OR "Asset correlation completed")'
+
+# Check for module-specific errors
+gcloud logging read 'resource.type="cloud_run_revision" resource.labels.service_name="scanner-service" severity>=ERROR' \
+    --project=precise-victory-467219-s4 --limit=20 --format=json | \
+    jq -r '.[] | select(.textPayload | contains("failed")) | .textPayload'
+```
+
+#### Data Flow Validation  
+```bash
+# Verify artifacts are being stored in Cloud Storage
+gsutil ls -la gs://dealbrief-scanner-artifacts/scans/ | head -20
+
+# Check scan status progression in Firestore
+gcloud firestore documents list scans --project=precise-victory-467219-s4 --limit=5 --format='value(name,data.status,data.updated_at)'
+
+# Validate report generation messages
+gcloud logging read 'resource.type="cloud_run_revision"' \
+    --project=precise-victory-467219-s4 --filter='textPayload:"report-generation"' --limit=5
 ```
 
 ## Expected Test Outcomes
 
-### Success Indicators
-- ✅ Job starts within 10-30 seconds of message publish
-- ✅ All scan modules execute without errors
-- ✅ Results stored in Cloud Storage
-- ✅ Job completes and scales to zero
-- ✅ Memory/CPU usage within limits
+### Module Execution Success Indicators
+- ✅ **Phase 1 Parallel Execution**: Independent modules start simultaneously (within 5-10 seconds)
+- ✅ **Endpoint Discovery Blocking**: Phase 3 modules wait for endpoint discovery completion
+- ✅ **Dependency Timing**: No dependent module starts before endpoint discovery finishes
+- ✅ **Asset Correlation**: Runs last after all other modules complete
+- ✅ **Parallel Efficiency**: Phase 1 modules complete in overlapping timeframes
 
-### Common Issues to Watch For
-- 🔍 **Secret Access**: SHODAN_API_KEY not accessible
-- 🔍 **Network Issues**: Firewall blocking external requests
-- 🔍 **Timeout Issues**: Job exceeding task timeout
-- 🔍 **Memory Limits**: Scanner hitting memory constraints
-- 🔍 **Storage Permissions**: Unable to write to Cloud Storage
+### System Success Indicators  
+- ✅ Job starts within 10-30 seconds of Pub/Sub message publish
+- ✅ All 17 security modules execute without critical errors
+- ✅ Firestore status updates: processing → completed
+- ✅ Artifacts stored in Cloud Storage with proper structure
+- ✅ Report generation message published successfully
+- ✅ Job completes and scales to zero (cost optimization)
+- ✅ Memory/CPU usage within configured limits
+
+### Module Dependency Issues to Watch For
+- 🚨 **Broken Dependencies**: Phase 3 modules starting before endpoint discovery
+- 🚨 **Infinite Waiting**: Dependent modules blocked indefinitely
+- 🚨 **Race Conditions**: Asset correlator running before module completion
+- 🚨 **Resource Starvation**: Too many parallel modules causing memory issues
+- 🚨 **Timeout Cascades**: One slow module blocking all dependent modules
+
+### Infrastructure Issues to Monitor
+- 🔍 **Secret Access**: SHODAN_API_KEY not accessible to security modules
+- 🔍 **Network Issues**: Firewall blocking external security tool requests
+- 🔍 **Module Timeouts**: Individual modules exceeding execution limits
+- 🔍 **Memory Pressure**: Scanner hitting container memory constraints during parallel execution
+- 🔍 **Storage Permissions**: Unable to write artifacts to Cloud Storage
+- 🔍 **Pub/Sub Delays**: Message delivery or acknowledgment issues
 
 ## Cost Status 🟢
 **Current Cost**: Near zero - only pay for:

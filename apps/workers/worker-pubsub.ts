@@ -32,41 +32,82 @@ function log(severity: 'ERROR' | 'INFO', message: string, context: object = {}) 
 
 // Handle Pub/Sub messages
 async function handleMessage(message: any) {
+  let scanId: string | undefined;
+  
   try {
     const data = JSON.parse(message.data.toString());
+    scanId = data.scanId;
     
-    log('INFO', 'Received Pub/Sub message', { scanId: data.scanId });
+    // Validate required fields
+    if (!scanId || !data.companyName || !data.domain) {
+      log('ERROR', 'Invalid message format', { data });
+      message.ack(); // Acknowledge to prevent redelivery of bad messages
+      return;
+    }
+    
+    log('INFO', 'Received Pub/Sub message', { 
+      scanId,
+      companyName: data.companyName,
+      domain: data.domain 
+    });
     
     // Update Firestore
-    await db.collection('scans').doc(data.scanId).update({
+    await db.collection('scans').doc(scanId).update({
       status: 'processing',
-      updated_at: new Date()
+      updated_at: new Date(),
+      worker_id: process.env.K_REVISION || 'unknown'
     });
     
     // Process using existing logic
     await processScan({
-      id: data.scanId,
+      scanId: data.scanId,
       companyName: data.companyName,
       domain: data.domain,
       createdAt: data.createdAt
     });
     
     // Update Firestore completion
-    await db.collection('scans').doc(data.scanId).update({
+    await db.collection('scans').doc(scanId).update({
       status: 'completed',
-      completed_at: new Date()
+      completed_at: new Date(),
+      total_findings: 0 // Will be updated by processScan
     });
     
     // Trigger report generation
     await pubsub.topic('report-generation').publishMessage({
-      json: { scanId: data.scanId }
+      json: { 
+        scanId,
+        companyName: data.companyName,
+        domain: data.domain 
+      }
     });
     
+    log('INFO', 'Successfully processed scan', { scanId });
     message.ack();
   } catch (error) {
     log('ERROR', 'Failed to process message', { 
-      error: (error as Error).message 
+      error: (error as Error).message,
+      stack: (error as Error).stack,
+      scanId
     });
+    
+    // Update Firestore with failure status if we have a scanId
+    if (scanId) {
+      try {
+        await db.collection('scans').doc(scanId).update({
+          status: 'failed',
+          error: (error as Error).message,
+          failed_at: new Date()
+        });
+      } catch (updateError) {
+        log('ERROR', 'Failed to update scan status', { 
+          scanId,
+          error: (updateError as Error).message 
+        });
+      }
+    }
+    
+    // Nack the message to retry later
     message.nack();
   }
 }
@@ -76,10 +117,29 @@ const server = express();
 server.get('/health', (req, res) => res.json({ status: 'healthy' }));
 server.listen(process.env.PORT || 8080);
 
-// Subscribe to Pub/Sub
-const subscription = pubsub.subscription('scan-jobs-subscription');
+// Configure subscription with proper acknowledgment deadline
+const subscription = pubsub.subscription('scan-jobs-subscription', {
+  ackDeadline: 600, // 10 minutes for long-running scans
+  flowControl: {
+    maxMessages: 1, // Process one scan at a time
+    allowExcessMessages: false
+  }
+});
+
 subscription.on('message', handleMessage);
+subscription.on('error', (error) => {
+  log('ERROR', 'Subscription error', { error: error.message });
+});
 
 log('INFO', 'Pub/Sub worker started', { 
-  subscription: 'scan-jobs-subscription' 
+  subscription: 'scan-jobs-subscription',
+  ackDeadline: 600,
+  maxMessages: 1
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  log('INFO', 'SIGTERM received, closing subscription');
+  await subscription.close();
+  process.exit(0);
 });
