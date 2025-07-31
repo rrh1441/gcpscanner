@@ -11,6 +11,7 @@
   "dependencies": {
     "@fastify/cors": "^11.0.1",
     "@fastify/multipart": "^9.0.0",
+    "@fastify/rate-limit": "^10.3.0",
     "@fastify/static": "^8.0.4",
     "@supabase/supabase-js": "^2.45.8",
     "axios": "^1.7.9",

@@ -2,6 +2,7 @@ import { config } from 'dotenv';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyCors from '@fastify/cors';
+import fastifyRateLimit from '@fastify/rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { PubSub } from '@google-cloud/pubsub';
@@ -142,6 +143,53 @@ fastify.register(fastifyCors, {
   credentials: true
 });
 
+// Register rate limiting
+fastify.register(fastifyRateLimit, {
+  global: true,
+  max: 100, // Maximum 100 requests
+  timeWindow: '1 minute', // Per minute
+  cache: 10000, // Cache up to 10000 rate limit entries
+  allowList: ['127.0.0.1', '::1'], // Exclude localhost from rate limits
+  redis: undefined, // Use in-memory store (consider Redis for production scaling)
+  skipOnError: true, // Don't apply rate limit if store errors
+  keyGenerator: (request) => {
+    // Rate limit by IP + API key if present
+    const apiKey = request.headers['x-api-key'];
+    return apiKey ? `${request.ip}-${apiKey}` : request.ip;
+  },
+  errorResponseBuilder: (request, context) => {
+    return {
+      statusCode: 429,
+      error: 'Too Many Requests',
+      message: `Rate limit exceeded, retry in ${context.after}`,
+      date: new Date().toISOString(),
+      expiresIn: context.after
+    };
+  },
+  onExceeding: (request, key) => {
+    log(`[rate-limit] Warning: ${key} is exceeding rate limit`);
+  },
+  onExceeded: (request, key) => {
+    log(`[rate-limit] Rejected: ${key} exceeded rate limit`);
+  }
+});
+
+// Configure specific rate limits for different endpoints
+const scanRateLimit = {
+  max: 10, // 10 scans per minute per IP
+  timeWindow: '1 minute'
+};
+
+const bulkScanRateLimit = {
+  max: 2, // 2 bulk operations per minute
+  timeWindow: '1 minute'
+};
+
+const statusRateLimit = {
+  max: 60, // 60 status checks per minute
+  timeWindow: '1 minute'
+};
+
 // Register static file serving for the public directory
 fastify.register(fastifyStatic, {
   root: path.join(__dirname, '..', 'public'),
@@ -154,7 +202,7 @@ fastify.get('/health', async (request, reply) => {
 });
 
 // Create a new scan (main endpoint)
-fastify.post('/scan', async (request, reply) => {
+fastify.post('/scan', { config: { rateLimit: scanRateLimit } }, async (request, reply) => {
   try {
     const { companyName, domain: rawDomain, tags } = request.body as { companyName: string; domain: string; tags?: string[] };
     
@@ -238,7 +286,7 @@ fastify.post('/scan', async (request, reply) => {
 });
 
 // Create a new scan (alias for frontend compatibility)
-fastify.post('/scans', async (request, reply) => {
+fastify.post('/scans', { config: { rateLimit: scanRateLimit } }, async (request, reply) => {
   try {
     const { companyName, domain: rawDomain, tags } = request.body as { companyName: string; domain: string; tags?: string[] };
     
@@ -323,7 +371,7 @@ fastify.post('/scans', async (request, reply) => {
 });
 
 // Get scan status
-fastify.get('/scan/:scanId/status', async (request, reply) => {
+fastify.get('/scan/:scanId/status', { config: { rateLimit: statusRateLimit } }, async (request, reply) => {
   const { scanId } = request.params as { scanId: string };
   
   const status = await getScanStatus(scanId);
@@ -405,7 +453,7 @@ fastify.get('/scan/:scanId/findings', async (request, reply) => {
 });
 
 // Bulk scan endpoint for JSON arrays
-fastify.post('/scan/bulk', async (request, reply) => {
+fastify.post('/scan/bulk', { config: { rateLimit: bulkScanRateLimit } }, async (request, reply) => {
   try {
     const { companies } = request.body as { companies: Array<{ companyName: string; domain: string; tags?: string[] }> };
     
@@ -513,7 +561,7 @@ fastify.post('/scan/bulk', async (request, reply) => {
 fastify.register(async function (fastify) {
   await fastify.register(import('@fastify/multipart'));
   
-  fastify.post('/scan/csv', async (request, reply) => {
+  fastify.post('/scan/csv', { config: { rateLimit: bulkScanRateLimit } }, async (request, reply) => {
     try {
       const data = await request.file();
       
@@ -657,7 +705,7 @@ fastify.register(async function (fastify) {
 });
 
 // API endpoint alias for frontend compatibility (/api/scans)
-fastify.post('/api/scans', async (request, reply) => {
+fastify.post('/api/scans', { config: { rateLimit: scanRateLimit } }, async (request, reply) => {
   try {
     const { companyName, domain: rawDomain, tags } = request.body as { companyName: string; domain: string; tags?: string[] };
     
