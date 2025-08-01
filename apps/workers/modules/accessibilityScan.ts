@@ -194,11 +194,18 @@ async function computePageHash(url: string): Promise<PageHashData | null> {
  * Check if site has changed since last accessibility scan
  */
 async function hasAccessibilityChanged(domain: string, currentHashes: PageHashData[]): Promise<boolean> {
-  // Starting fresh - always run accessibility scan
-  log(`accessibility=change_detection domain="${domain}" status="starting_fresh"`);
-  return true;
+  try {
+    // Starting fresh - always run accessibility scan
+    log(`accessibility=change_detection domain="${domain}" status="starting_fresh"`);
+    return true;
+    
+    // Note: The code below is unreachable but kept for future implementation
+    // when we add persistence for accessibility scan history
     
     // Check if any pages changed
+    const currentHashMap = new Map(currentHashes.map(h => [h.url, h]));
+    const previousHashMap = new Map<string, PageHashData>(); // TODO: Load from storage
+    
     for (const [url, currentHash] of currentHashMap) {
       const previousHash = previousHashMap.get(url);
       
@@ -208,11 +215,11 @@ async function hasAccessibilityChanged(domain: string, currentHashes: PageHashDa
       }
       
       // Check if any component hash changed
-      if (currentHash.titleHash !== previousHash.titleHash ||
-          currentHash.headingsHash !== previousHash.headingsHash ||
-          currentHash.linksHash !== previousHash.linksHash ||
-          currentHash.formsHash !== previousHash.formsHash ||
-          currentHash.contentHash !== previousHash.contentHash) {
+      if (currentHash.titleHash !== previousHash?.titleHash ||
+          currentHash.headingsHash !== previousHash?.headingsHash ||
+          currentHash.linksHash !== previousHash?.linksHash ||
+          currentHash.formsHash !== previousHash?.formsHash ||
+          currentHash.contentHash !== previousHash?.contentHash) {
         log(`accessibility=change_detected domain="${domain}" url="${url}" reason="content_changed"`);
         return true;
       }

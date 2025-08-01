@@ -119,12 +119,14 @@ server.listen(process.env.PORT || 8080);
 
 // Configure subscription with proper acknowledgment deadline
 const subscription = pubsub.subscription('scan-jobs-subscription', {
-  ackDeadline: 600, // 10 minutes for long-running scans
   flowControl: {
     maxMessages: 1, // Process one scan at a time
     allowExcessMessages: false
   }
 });
+
+// Note: Ack deadline is configured on the subscription itself in GCP Console
+// or via gcloud: gcloud pubsub subscriptions update scan-jobs-subscription --ack-deadline=600
 
 subscription.on('message', handleMessage);
 subscription.on('error', (error) => {

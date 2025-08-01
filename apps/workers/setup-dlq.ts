@@ -56,7 +56,7 @@ async function setupDeadLetterQueue() {
     // Also ensure proper ack deadline
     metadata.ackDeadlineSeconds = 600; // 10 minutes
     
-    await subscription.setMetadata(metadata);
+    await subscription.setMetadata(metadata as any);
     console.log(`✅ Updated ${MAIN_SUBSCRIPTION} with DLQ policy`);
     console.log(`   - Dead letter topic: ${DLQ_TOPIC}`);
     console.log(`   - Max delivery attempts: ${MAX_DELIVERY_ATTEMPTS}`);
@@ -67,8 +67,9 @@ async function setupDeadLetterQueue() {
     const publisherRole = 'roles/pubsub.publisher';
     const serviceAccount = `serviceAccount:service-${PROJECT_ID.split('-')[2]}@gcp-sa-pubsub.iam.gserviceaccount.com`;
     
-    const binding = iam.bindings.find(b => b.role === publisherRole);
+    const binding = iam.bindings?.find((b: any) => b.role === publisherRole);
     if (!binding?.members?.includes(serviceAccount)) {
+      if (!iam.bindings) iam.bindings = [];
       iam.bindings.push({
         role: publisherRole,
         members: [serviceAccount],

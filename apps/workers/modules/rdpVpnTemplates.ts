@@ -89,18 +89,18 @@ async function getTargetUrls(scanId: string, domain: string): Promise<string[]> 
   try {
     // Get URLs from previous scans
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };    
-    urlRows.forEach(row => {
+    const urlRows: any[] = [];
+    const urlResult = { rows: urlRows };    
+    urlRows.forEach((row: any) => {
       targets.add(row.val_text.trim());
     });
     
     // Get hostnames and subdomains to construct URLs
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };    
+    const hostRows: any[] = [];
+    const hostResult = { rows: hostRows };    
     const hosts = new Set([domain]);
-    hostRows.forEach(row => {
+    hostRows.forEach((row: any) => {
       hosts.add(row.val_text.trim());
     });
     

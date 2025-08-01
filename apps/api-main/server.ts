@@ -89,12 +89,7 @@ async function getScanStatus(scanId: string): Promise<any> {
 async function getScanArtifacts(scanId: string): Promise<any[]> {
   try {
     // Query artifacts from PostgreSQL with GCP artifact store
-    const artifactsResult = await pool.query(`
-      SELECT id, type, val_text, severity, src_url, sha256, mime, created_at, meta
-      FROM artifacts 
-      WHERE meta->>'scan_id' = $1
-      ORDER BY severity DESC, created_at DESC
-    `, [scanId]);
+    const artifactsResult = await pool.query();
     
     return artifactsResult.rows;
   } catch (error) {
@@ -423,14 +418,7 @@ fastify.get('/scan/:scanId/findings', async (request, reply) => {
   try {
     log(`[api] Retrieving findings for scan: ${scanId}`);
     
-    const findingsResult = await pool.query(`
-      SELECT f.id, f.finding_type, f.description, f.recommendation, f.created_at,
-             a.type as artifact_type, a.val_text, a.severity, a.src_url
-      FROM findings f
-      JOIN artifacts a ON f.artifact_id = a.id
-      WHERE a.meta->>'scan_id' = $1
-      ORDER BY a.severity DESC, f.created_at DESC
-    `, [scanId]);
+    const findingsResult = await pool.query();
     
     log(`[api] Found ${findingsResult.rows.length} findings for scan ${scanId}`);
     

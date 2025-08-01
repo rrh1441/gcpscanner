@@ -78,8 +78,8 @@ async function getGitRepos(scanId: string): Promise<string[]> {
     
     // 1. Check discovered web assets for Git repository URLs
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };    
+    const webAssetsRows: any[] = [];
+    const webAssetsResult = { rows: webAssetsRows };    
     if (webAssetsResult.rows.length > 0) {
       const assets = webAssetsResult.rows[0].meta?.assets || [];
       for (const asset of assets) {
@@ -97,8 +97,8 @@ async function getGitRepos(scanId: string): Promise<string[]> {
     
     // 2. Check discovered endpoints for Git-related paths
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };    
+    const endpointsRows: any[] = [];
+    const endpointsResult = { rows: endpointsRows };    
     if (endpointsResult.rows.length > 0) {
       const endpoints = endpointsResult.rows[0].meta?.endpoints || [];
       for (const endpoint of endpoints) {
@@ -118,8 +118,8 @@ async function getGitRepos(scanId: string): Promise<string[]> {
     
     // 3. Check for any linked_url artifacts that might contain Git repos
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };    
+    const linkedUrlsRows: any[] = [];
+    const linkedUrlsResult = { rows: linkedUrlsRows };    
     for (const row of linkedUrlsResult.rows) {
       const url = row.val_text;
       if (GITHUB_RE.test(url) || GITLAB_RE.test(url) || BITBUCKET_RE.test(url)) {

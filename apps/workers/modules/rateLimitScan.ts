@@ -51,7 +51,7 @@ async function getTestableEndpoints(scanId: string, domain: string): Promise<Dis
     try {
     // Pool query removed for GCP migration - starting fresh
     const rows: any[] = [];
-    const result = { rows: [] };        if (result.rows.length > 0 && result.rows[0].meta.endpoints) {
+    const result = { rows: [] as any[] };        if (result.rows.length > 0 && result.rows[0].meta.endpoints) {
             const endpoints = result.rows[0].meta.endpoints as DiscoveredEndpoint[];
             // Filter for endpoints most likely to have rate limits
             return endpoints.filter(e => 

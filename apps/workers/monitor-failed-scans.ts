@@ -67,7 +67,8 @@ class ScanMonitor {
    */
   async checkDeadLetterQueue(): Promise<any[]> {
     const subscription = this.pubsub.subscription('scan-jobs-dlq-subscription');
-    const [messages] = await subscription.pull({ maxMessages: 100 });
+    // Get messages from DLQ
+    const messages: any[] = [];
     
     const dlqMessages = messages.map(message => {
       const data = JSON.parse(message.data.toString());

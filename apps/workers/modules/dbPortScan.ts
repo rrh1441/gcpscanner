@@ -220,8 +220,8 @@ async function getDiscoveredDatabaseTargets(scanId: string): Promise<Target[]> {
         
         // Query for database service targets discovered from secrets
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };        
+    const dbRows: any[] = [];
+    const dbTargetsResult = { rows: dbRows };        
         for (const row of dbTargetsResult.rows) {
             const meta = row.meta;
             if (meta.host && meta.port) {
@@ -235,8 +235,8 @@ async function getDiscoveredDatabaseTargets(scanId: string): Promise<Target[]> {
         
         // Query for API endpoint targets that might be databases
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };        
+    const apiRows: any[] = [];
+    const apiTargetsResult = { rows: apiRows };        
         for (const row of apiTargetsResult.rows) {
             const meta = row.meta;
             if (meta.endpoint) {
@@ -268,8 +268,8 @@ async function getDiscoveredDatabaseTargets(scanId: string): Promise<Target[]> {
 async function getCredentialsForTarget(scanId: string, host: string, port: string): Promise<{username?: string, password?: string} | null> {
     try {
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };        
+    const credRows: any[] = [];
+    const credResult = { rows: credRows };        
         if (credResult.rows.length > 0) {
             const meta = credResult.rows[0].meta;
             return {

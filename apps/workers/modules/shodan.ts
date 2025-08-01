@@ -271,7 +271,8 @@ export async function runShodanScan(job: {
 
     // Pool query removed for GCP migration - starting fresh
     const rows: any[] = [];
-    const result = { rows: [] };  dbRes.rows.forEach((r) => targets.add(r.val_text.trim()));
+    const result = { rows: [] };  
+    result.rows.forEach((r: any) => targets.add(r.val_text.trim()));
 
   log(`[Shodan] Querying ${targets.size} targets (PAGE_LIMIT=${PAGE_LIMIT})`);
 

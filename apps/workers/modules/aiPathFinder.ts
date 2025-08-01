@@ -65,8 +65,8 @@ async function getTechStack(scanId: string, domain: string): Promise<TechStack> 
         // Query for tech stack artifacts from previous scans
     // Pool query removed for GCP migration - starting fresh
     const rows: any[] = [];
-    const result = { rows: [] };
-        for (const row of techResult.rows) {
+    const result = { rows: rows };
+        for (const row of result.rows) {
             const meta = row.meta;
             
             // Extract technology information from various formats

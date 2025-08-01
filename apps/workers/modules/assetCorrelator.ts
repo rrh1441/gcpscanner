@@ -182,8 +182,14 @@ async function correlateAssets(scanId: string, domain: string): Promise<void> {
   
   try {
     // Pool query removed for GCP migration - starting fresh
-    const rows: any[] = [];
-    const result = { rows: [] };      if (row.type === 'hostname' || row.type === 'subdomain') {
+    const rows: RawArtifact[] = [];
+    const result = { rows: rows };
+    
+    for (const row of result.rows) {
+      artifactBuffer.push(row);
+      artifactCount++;
+      
+      if (row.type === 'hostname' || row.type === 'subdomain') {
         allHostnames.add(row.val_text);
       }
       if (row.hostnames_json) {
