@@ -4,6 +4,7 @@ steps:
     args: [
       'build',
       '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/dealbrief/scanner-frontend',
+      '-f', 'apps/apps/frontend/Dockerfile',
       'apps/apps/frontend'
     ]
 

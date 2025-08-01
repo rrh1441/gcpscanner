@@ -1,0 +1,5 @@
+runtime: nodejs18
+
+env_variables:
+  NEXT_PUBLIC_SCANNER_API_URL: "https://scanner-api-242181373909.us-central1.run.app"
+  NODE_ENV: "production"
