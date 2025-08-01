@@ -1,0 +1,11 @@
+# Ignore everything except what we need for the frontend build
+*
+!apps/
+apps/*
+!apps/apps/
+apps/apps/*
+!apps/apps/frontend/
+apps/apps/frontend/node_modules/
+apps/apps/frontend/.next/
+apps/apps/frontend/.git/
+!cloudbuild-frontend.yaml

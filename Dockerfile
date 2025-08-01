@@ -79,8 +79,6 @@ RUN npm install -g pnpm tsx
 COPY package*.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api-main/package.json ./apps/api-main/
 COPY apps/workers/package.json ./apps/workers/
-COPY apps/sync-worker/package.json ./apps/sync-worker/
-COPY apps/sync-worker/tsconfig.json ./apps/sync-worker/
 RUN pnpm install
 
 # ----- source & build -----
@@ -89,4 +87,4 @@ RUN pnpm build
 
 RUN mkdir -p /tmp && chmod 777 /tmp
 EXPOSE 3000
-CMD ["npx","tsx","apps/workers/worker-pubsub.ts"]
+CMD ["node","apps/workers/dist/worker-pubsub.js"]

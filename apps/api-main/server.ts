@@ -8,8 +8,20 @@ import { fileURLToPath } from 'url';
 import { PubSub } from '@google-cloud/pubsub';
 import { Firestore } from '@google-cloud/firestore';
 import { nanoid } from 'nanoid';
-import { pool } from '../workers/core/artifactStoreGCP.js';
-import { normalizeDomain } from '../workers/util/domainNormalizer.js';
+// Stub for database queries (will be implemented with proper GCP integration)
+const pool = {
+  query: async () => ({ rows: [] })
+};
+
+// Simple domain normalization function
+function normalizeDomain(rawDomain: string) {
+  const cleaned = rawDomain.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+  return {
+    isValid: cleaned.length > 0 && cleaned.includes('.'),
+    normalizedDomain: cleaned,
+    validationErrors: cleaned.length === 0 || !cleaned.includes('.') ? ['Invalid domain format'] : []
+  };
+}
 
 config();
 
@@ -493,7 +505,7 @@ fastify.post('/scan/bulk', { config: { rateLimit: bulkScanRateLimit } }, async (
         }
         
         const job = {
-          id: scanId,
+          scanId,
           companyName,
           domain: normalizedDomain,
           originalDomain: rawDomain,
@@ -638,7 +650,7 @@ fastify.register(async function (fastify) {
           }
           
           const job = {
-            id: scanId,
+            scanId,
             companyName,
             domain: normalizedDomain,
             originalDomain: rawDomain,
@@ -891,8 +903,9 @@ fastify.post('/scan/:id/callback', async (request, reply) => {
 
 const start = async () => {
   try {
-    await fastify.listen({ port: 3000, host: '0.0.0.0' });
-    log('[api] GCP API Server listening on port 3000');
+    const port = parseInt(process.env.PORT || '3000');
+    await fastify.listen({ port, host: '0.0.0.0' });
+    log(`[api] GCP API Server listening on port ${port}`);
     
     // Test GCP connectivity on startup
     const health = await healthCheck();
