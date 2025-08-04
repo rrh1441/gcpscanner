@@ -123,7 +123,12 @@ class ScannerAPI {
   }
   
   async checkHealth(): Promise<ApiHealth> {
-    return this.request('health');
+    // Use local health endpoint instead of backend to avoid auth issues
+    const response = await fetch('/api/health');
+    if (!response.ok) {
+      throw new Error(`Health check failed: ${response.status}`);
+    }
+    return response.json();
   }
   
   async waitForScanCompletion(

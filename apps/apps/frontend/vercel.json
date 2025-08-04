@@ -16,5 +16,16 @@
   "github": {
     "autoDeployment": true,
     "silent": false
-  }
+  },
+  "headers": [
+    {
+      "source": "/api/health",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    }
+  ]
 }
