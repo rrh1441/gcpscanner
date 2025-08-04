@@ -1,5 +1,7 @@
 # Vercel Deployment Guide
 
+🚀 **Connected to GitHub auto-deployment!**
+
 ## Quick Setup
 
 1. **Deploy to Vercel**:
