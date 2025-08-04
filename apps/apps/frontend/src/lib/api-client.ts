@@ -49,14 +49,35 @@ export interface BulkScanError {
 
 class ScannerAPI {
   private async request(path: string, options?: RequestInit) {
-    const response = await fetch(`/api/proxy/${path}`, options);
+    // Try direct GCP API call first (no auth required if backend is public)
+    const GCP_API_BASE = process.env.NEXT_PUBLIC_SCANNER_API_URL || 'https://scanner-api-242181373909.us-central1.run.app';
     
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(error || `Request failed: ${response.status}`);
+    try {
+      const response = await fetch(`${GCP_API_BASE}/${path}`, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options?.headers,
+        },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Request failed: ${response.status}`);
+      }
+      
+      return response.json();
+    } catch (error) {
+      // Fallback to proxy if direct call fails
+      console.warn('Direct API call failed, trying proxy:', error);
+      const response = await fetch(`/api/proxy/${path}`, options);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `Request failed: ${response.status}`);
+      }
+      
+      return response.json();
     }
-    
-    return response.json();
   }
   
   async createScan(data: CreateScanRequest): Promise<Scan> {
