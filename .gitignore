@@ -14,6 +14,7 @@ dist/
 .env
 .env.local
 .env*.local
+.env.docker
 
 # Logs
 *.log
@@ -47,6 +48,13 @@ temp/
 .wrangler/
 .dev.vars
 .vercel
+
+# GCP specific (keep local only)
+.gcp/
+gcp-key.json
+service-account*.json
+app.yaml
+# Note: cloudbuild*.yaml and docker-compose*.yaml should be tracked
 
 # TypeScript
 *.tsbuildinfo

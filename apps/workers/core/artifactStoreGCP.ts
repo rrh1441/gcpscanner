@@ -62,8 +62,16 @@ export async function insertArtifact(
 
 async function insertArtifactInternal(artifact: ArtifactInput): Promise<number> {
   try {
+    // Sanitize undefined values to null for Firestore compatibility
+    const sanitizedArtifact: any = { ...artifact };
+    Object.keys(sanitizedArtifact).forEach(key => {
+      if (sanitizedArtifact[key] === undefined) {
+        sanitizedArtifact[key] = null;
+      }
+    });
+    
     const docRef = await firestore.collection('artifacts').add({
-      ...artifact,
+      ...sanitizedArtifact,
       created_at: new Date().toISOString(),
       scan_id: artifact.meta?.scan_id || 'unknown'
     });
@@ -105,7 +113,7 @@ export async function insertFinding(
       finding_type: findingType,
       recommendation: recommendation || '',
       description: description || '',
-      repro_command: reproCommand
+      repro_command: reproCommand || null
     };
     return insertFindingInternal(finding);
   }
@@ -116,8 +124,16 @@ export async function insertFinding(
 
 async function insertFindingInternal(finding: any): Promise<number> {
   try {
+    // Sanitize undefined values to null for Firestore compatibility
+    const sanitizedFinding: any = { ...finding };
+    Object.keys(sanitizedFinding).forEach(key => {
+      if (sanitizedFinding[key] === undefined) {
+        sanitizedFinding[key] = null;
+      }
+    });
+    
     const docRef = await firestore.collection('findings').add({
-      ...finding,
+      ...sanitizedFinding,
       created_at: new Date().toISOString()
     });
     

@@ -1,29 +1,74 @@
-FROM node:18-slim
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl wget git python3 python3-pip dnsutils nmap unzip chromium \
-    && rm -rf /var/lib/apt/lists/*
+# Multi-stage build for worker with heavy security tooling
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy and install dependencies
-COPY package*.json ./
-RUN npm install --legacy-peer-deps
+# Copy workspace configuration
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/workers/package.json ./apps/workers/
 
-# Copy source code
-COPY . .
+# Install pnpm and dependencies
+RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN pnpm install --frozen-lockfile
 
-# Build TypeScript
-RUN npm run build || npx tsc || true
+# Copy source files (excluding node_modules to avoid conflicts)
+COPY apps/ ./apps/
+COPY common/ ./common/
+COPY packages/ ./packages/
+COPY *.json *.js *.ts *.md ./
+
+# Build the workers package
+RUN pnpm --filter @dealbrief/workers build
+
+# Runtime stage - includes security tools
+FROM node:20-alpine AS runtime
+
+# Install runtime dependencies including Chromium
+RUN apk add --no-cache \
+    bash curl wget git python3 py3-pip unzip \
+    chromium nss freetype harfbuzz ca-certificates \
+    ttf-freefont libx11 libxcomposite libxdamage \
+    gcompat bind-tools nmap
 
 # Install security tools
-RUN curl -L https://github.com/projectdiscovery/nuclei/releases/download/v3.0.4/nuclei_3.0.4_linux_amd64.zip -o nuclei.zip \
-    && unzip -o nuclei.zip && mv nuclei /usr/local/bin/ && rm nuclei.zip
+ARG NUCLEI_VERSION=3.4.5
+ARG TRUFFLEHOG_VERSION=3.83.7
 
-# Set environment
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+RUN curl -L https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip -o nuclei.zip && \
+    unzip nuclei.zip && mv nuclei /usr/local/bin/ && rm nuclei.zip && \
+    chmod +x /usr/local/bin/nuclei && \
+    nuclei -update-templates
 
-# Run the worker
-CMD ["node", "dist/apps/workers/worker.js"]
+RUN curl -sSL https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_amd64.tar.gz | \
+    tar -xz -C /usr/local/bin trufflehog
+
+# Install Python dependencies
+RUN pip3 install --no-cache-dir --break-system-packages \
+    dnstwist python-whois webtech
+
+# Set up Chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser \
+    NODE_ENV=production
+
+# Create app directory and user
+WORKDIR /app
+RUN addgroup -g 1001 -S scanner && \
+    adduser -S -u 1001 -G scanner scanner
+
+# Copy built application
+COPY --from=builder --chown=scanner:scanner /app/node_modules ./node_modules
+COPY --from=builder --chown=scanner:scanner /app/apps/workers/node_modules ./apps/workers/node_modules
+COPY --from=builder --chown=scanner:scanner /app/apps/workers/dist ./apps/workers/dist
+COPY --chown=scanner:scanner apps/workers/templates ./apps/workers/templates
+COPY --chown=scanner:scanner apps/workers/scripts ./apps/workers/scripts
+COPY --chown=scanner:scanner apps/workers/modules/*.py ./apps/workers/modules/
+
+USER scanner
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD node -e "console.log('healthy')" || exit 1
+
+# Default command - will be overridden by Cloud Run
+CMD ["node", "apps/workers/dist/worker-pubsub.js"]
