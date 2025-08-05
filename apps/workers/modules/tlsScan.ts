@@ -98,7 +98,7 @@ async function validateSSLScan(): Promise<boolean> {
 /** Run Python certificate validator with SNI support */
 async function runPythonCertificateValidator(host: string, port: number = 443): Promise<PythonValidationResult | null> {
   try {
-    const pythonScript = join(__dirname, '../scripts/tls_verify.py');
+    const pythonScript = join(__dirname, '../../scripts/tls_verify.py');
     const result = await exec('python3', [pythonScript, host, '--port', port.toString(), '--json'], {
       timeout: 30000 // 30 second timeout
     });

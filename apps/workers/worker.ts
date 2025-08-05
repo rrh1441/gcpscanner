@@ -25,23 +25,32 @@ async function runModuleWithTimeout<T>(
 ): Promise<T> {
   const startTime = Date.now();
   
-  return Promise.race([
-    moduleFunction().then(result => {
-      const duration = Date.now() - startTime;
-      log(`[${moduleName}] COMPLETED - duration=${duration}ms scan_id=${scanId}`);
-      return result;
-    }).catch(error => {
-      const duration = Date.now() - startTime;
-      log(`[${moduleName}] FAILED - error="${error.message}" duration=${duration}ms scan_id=${scanId}`);
-      throw error;
-    }),
-    new Promise<never>((_, reject) => {
-      setTimeout(() => {
-        log(`[${moduleName}] TIMEOUT - ${timeoutMs}ms exceeded scan_id=${scanId}`);
-        reject(new Error(`Module ${moduleName} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-    })
-  ]);
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  
+  try {
+    return await Promise.race([
+      moduleFunction().then(result => {
+        const duration = Date.now() - startTime;
+        log(`[${moduleName}] COMPLETED - duration=${duration}ms scan_id=${scanId}`);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        return result;
+      }).catch(error => {
+        const duration = Date.now() - startTime;
+        log(`[${moduleName}] FAILED - error="${error.message}" duration=${duration}ms scan_id=${scanId}`);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        throw error;
+      }),
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          log(`[${moduleName}] TIMEOUT - ${timeoutMs}ms exceeded scan_id=${scanId}`);
+          reject(new Error(`Module ${moduleName} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      })
+    ]);
+  } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    throw error;
+  }
 }
 
 config();
@@ -135,7 +144,7 @@ export async function processScan(job: ScanJob) {
       log(`[endpoint_discovery] STARTING - scan_id=${scanId}`);
       parallelModules.endpoint_discovery = runModuleWithTimeout('endpoint_discovery', 
         () => runEndpointDiscovery({ domain, scanId }), 
-        3 * 60 * 1000, scanId);
+        60 * 1000, scanId); // 1 minute timeout to test timeout mechanism
     }
     if (activeModules.includes('tls_scan')) {
       log(`[tls_scan] STARTING - scan_id=${scanId}`);
