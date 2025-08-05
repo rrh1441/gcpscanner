@@ -2,6 +2,27 @@ import { Firestore } from '@google-cloud/firestore';
 
 const firestore = new Firestore();
 
+// Recursively sanitize undefined values to prevent Firestore errors
+function deepSanitizeUndefined(obj: any): any {
+  if (obj === null || obj === undefined) {
+    return null;
+  }
+  
+  if (Array.isArray(obj)) {
+    return obj.map(item => deepSanitizeUndefined(item));
+  }
+  
+  if (typeof obj === 'object' && obj !== null) {
+    const sanitized: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      sanitized[key] = deepSanitizeUndefined(value);
+    }
+    return sanitized;
+  }
+  
+  return obj;
+}
+
 // Export a stub pool for backward compatibility
 // This is no longer used in GCP implementation
 export const pool = {
@@ -62,13 +83,8 @@ export async function insertArtifact(
 
 async function insertArtifactInternal(artifact: ArtifactInput): Promise<number> {
   try {
-    // Sanitize undefined values to null for Firestore compatibility
-    const sanitizedArtifact: any = { ...artifact };
-    Object.keys(sanitizedArtifact).forEach(key => {
-      if (sanitizedArtifact[key] === undefined) {
-        sanitizedArtifact[key] = null;
-      }
-    });
+    // Recursively sanitize undefined values to null for Firestore compatibility
+    const sanitizedArtifact: any = deepSanitizeUndefined({ ...artifact });
     
     const docRef = await firestore.collection('artifacts').add({
       ...sanitizedArtifact,
@@ -124,13 +140,8 @@ export async function insertFinding(
 
 async function insertFindingInternal(finding: any): Promise<number> {
   try {
-    // Sanitize undefined values to null for Firestore compatibility
-    const sanitizedFinding: any = { ...finding };
-    Object.keys(sanitizedFinding).forEach(key => {
-      if (sanitizedFinding[key] === undefined) {
-        sanitizedFinding[key] = null;
-      }
-    });
+    // Recursively sanitize undefined values to null for Firestore compatibility
+    const sanitizedFinding: any = deepSanitizeUndefined({ ...finding });
     
     const docRef = await firestore.collection('findings').add({
       ...sanitizedFinding,

@@ -30,6 +30,11 @@ RUN apk add --no-cache \
     ttf-freefont libx11 libxcomposite libxdamage \
     gcompat bind-tools nmap
 
+# Try to install sslscan from Alpine packages first, fallback to binary
+RUN apk add --no-cache sslscan || \
+    (wget -O /usr/local/bin/sslscan https://github.com/rbsec/sslscan/releases/download/2.0.15/sslscan-2.0.15-static-linux-x86_64 && \
+     chmod +x /usr/local/bin/sslscan)
+
 # Install security tools
 ARG NUCLEI_VERSION=3.4.5
 ARG TRUFFLEHOG_VERSION=3.83.7

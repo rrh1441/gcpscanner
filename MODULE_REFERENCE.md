@@ -32,11 +32,11 @@ This document provides a comprehensive overview of all security scanning modules
 - **Dependencies**: None  
 - **Execution**: Immediate parallel start
 
-#### **dns_twist** (Tier 1) ✅ ACTIVE
+#### **dns_twist** (Tier 2) ✅ ACTIVE
 - **Purpose**: Finds typosquatted domains for phishing detection
 - **What it finds**: Malicious lookalike domains, phishing setups
 - **Dependencies**: None
-- **Execution**: Immediate parallel start
+- **Execution**: Tier 2 only (30-60s duration)
 
 #### **ai_path_finder** (Available - Not Active)
 - **Purpose**: AI-powered intelligent path generation using OpenAI GPT-4
@@ -203,10 +203,9 @@ This document provides a comprehensive overview of all security scanning modules
 
 ### Tier 1 Execution (Default) - Currently Active
 ```
-IMMEDIATE PARALLEL START (8 modules):
+IMMEDIATE PARALLEL START (7 modules):
 ├── breach_directory_probe ✅
 ├── shodan ✅ 
-├── dns_twist ✅
 ├── document_exposure ✅
 ├── endpoint_discovery ✅
 ├── tls_scan ✅
@@ -222,12 +221,13 @@ AFTER ENDPOINT DISCOVERY (6 modules):
 ├── backend_exposure_scanner ✅
 └── asset_correlator ✅
 
-TOTAL: 14 active modules + asset correlator
+TOTAL: 13 active modules + asset correlator
 ```
 
 ### Tier 2 Execution (Available but not implemented)
 ```
 All Tier 1 modules PLUS additional capabilities:
+├── dns_twist (typosquatting detection)
 ├── ai_path_finder (AI-enhanced path discovery)
 ├── adversarial_media_scan (reputation analysis)
 ├── web_archive_scanner (historical analysis)
@@ -303,7 +303,7 @@ const TIER_1_MODULES = [
 
 ## Module Status
 
-✅ **Active in Tier 1**: 14 modules + asset correlator (15 total)  
+✅ **Active in Tier 1**: 13 modules + asset correlator (14 total)  
 🔄 **Available but not active**: 10 additional modules  
 ❌ **Disabled**: censys_platform_scan (removed per user request)  
 🚫 **Legacy**: spiderfoot (90% redundant), trufflehog (replaced by client_secret_scanner)

@@ -4,7 +4,6 @@ import { insertArtifact as insertArtifactGCP } from './core/artifactStoreGCP.js'
 import { runShodanScan } from './modules/shodan.js';
 import { runDocumentExposure } from './modules/documentExposure.js';
 import { runClientSecretScanner } from './modules/clientSecretScanner.js';
-import { runDnsTwist } from './modules/dnsTwist.js';
 import { runTlsScan } from './modules/tlsScan.js';
 import { runNucleiLegacy as runNuclei } from './modules/nuclei.js';
 import { runSpfDmarc } from './modules/spfDmarc.js';
@@ -16,6 +15,34 @@ import { runBreachDirectoryProbe } from './modules/breachDirectoryProbe.js';
 import { runAssetCorrelator } from './modules/assetCorrelator.js';
 import { runConfigExposureScanner } from './modules/configExposureScanner.js';
 import { runBackendExposureScanner } from './modules/backendExposureScanner.js';
+
+// Module timeout wrapper
+async function runModuleWithTimeout<T>(
+  moduleName: string,
+  moduleFunction: () => Promise<T>,
+  timeoutMs: number,
+  scanId: string
+): Promise<T> {
+  const startTime = Date.now();
+  
+  return Promise.race([
+    moduleFunction().then(result => {
+      const duration = Date.now() - startTime;
+      log(`[${moduleName}] COMPLETED - duration=${duration}ms scan_id=${scanId}`);
+      return result;
+    }).catch(error => {
+      const duration = Date.now() - startTime;
+      log(`[${moduleName}] FAILED - error="${error.message}" duration=${duration}ms scan_id=${scanId}`);
+      throw error;
+    }),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        log(`[${moduleName}] TIMEOUT - ${timeoutMs}ms exceeded scan_id=${scanId}`);
+        reject(new Error(`Module ${moduleName} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    })
+  ]);
+}
 
 config();
 
@@ -52,7 +79,6 @@ interface ScanJob {
 // Tier configuration
 const TIER_1_MODULES = [
   'config_exposure',
-  'dns_twist', 
   'document_exposure',
   'shodan',
   'breach_directory_probe',
@@ -87,28 +113,47 @@ export async function processScan(job: ScanJob) {
     
     // Independent modules
     if (activeModules.includes('breach_directory_probe')) {
-      parallelModules.breach_directory_probe = runBreachDirectoryProbe({ domain, scanId });
+      log(`[breach_directory_probe] STARTING - scan_id=${scanId}`);
+      parallelModules.breach_directory_probe = runModuleWithTimeout('breach_directory_probe', 
+        () => runBreachDirectoryProbe({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('shodan')) {
-      parallelModules.shodan = runShodanScan({ domain, scanId, companyName });
+      log(`[shodan] STARTING - scan_id=${scanId}`);
+      parallelModules.shodan = runModuleWithTimeout('shodan', 
+        () => runShodanScan({ domain, scanId, companyName }), 
+        3 * 60 * 1000, scanId);
     }
-    if (activeModules.includes('dns_twist')) {
-      parallelModules.dns_twist = runDnsTwist({ domain, scanId });
-    }
+    // dns_twist moved to Tier 2 - no longer runs in Tier 1
     if (activeModules.includes('document_exposure')) {
-      parallelModules.document_exposure = runDocumentExposure({ companyName, domain, scanId });
+      log(`[document_exposure] STARTING - scan_id=${scanId}`);
+      parallelModules.document_exposure = runModuleWithTimeout('document_exposure', 
+        () => runDocumentExposure({ companyName, domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('endpoint_discovery')) {
-      parallelModules.endpoint_discovery = runEndpointDiscovery({ domain, scanId });
+      log(`[endpoint_discovery] STARTING - scan_id=${scanId}`);
+      parallelModules.endpoint_discovery = runModuleWithTimeout('endpoint_discovery', 
+        () => runEndpointDiscovery({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('tls_scan')) {
-      parallelModules.tls_scan = runTlsScan({ domain, scanId });
+      log(`[tls_scan] STARTING - scan_id=${scanId}`);
+      parallelModules.tls_scan = runModuleWithTimeout('tls_scan', 
+        () => runTlsScan({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('spf_dmarc')) {
-      parallelModules.spf_dmarc = runSpfDmarc({ domain, scanId });
+      log(`[spf_dmarc] STARTING - scan_id=${scanId}`);
+      parallelModules.spf_dmarc = runModuleWithTimeout('spf_dmarc', 
+        () => runSpfDmarc({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('config_exposure')) {
-      parallelModules.config_exposure = runConfigExposureScanner({ domain, scanId });
+      log(`[config_exposure] STARTING - scan_id=${scanId}`);
+      parallelModules.config_exposure = runModuleWithTimeout('config_exposure', 
+        () => runConfigExposureScanner({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     
     // Wait for endpoint discovery first
@@ -122,32 +167,57 @@ export async function processScan(job: ScanJob) {
     
     // Then run dependent modules
     if (activeModules.includes('nuclei')) {
-      parallelModules.nuclei = runNuclei({ domain, scanId });
+      log(`[nuclei] STARTING - scan_id=${scanId}`);
+      parallelModules.nuclei = runModuleWithTimeout('nuclei', 
+        () => runNuclei({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('tech_stack_scan')) {
-      parallelModules.tech_stack_scan = runTechStackScan({ domain, scanId });
+      log(`[tech_stack_scan] STARTING - scan_id=${scanId}`);
+      parallelModules.tech_stack_scan = runModuleWithTimeout('tech_stack_scan', 
+        () => runTechStackScan({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('abuse_intel_scan')) {
-      parallelModules.abuse_intel_scan = runAbuseIntelScan({ scanId });
+      log(`[abuse_intel_scan] STARTING - scan_id=${scanId}`);
+      parallelModules.abuse_intel_scan = runModuleWithTimeout('abuse_intel_scan', 
+        () => runAbuseIntelScan({ scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('client_secret_scanner')) {
-      parallelModules.client_secret_scanner = runClientSecretScanner({ scanId });
+      log(`[client_secret_scanner] STARTING - scan_id=${scanId}`);
+      parallelModules.client_secret_scanner = runModuleWithTimeout('client_secret_scanner', 
+        () => runClientSecretScanner({ scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('backend_exposure_scanner')) {
-      parallelModules.backend_exposure_scanner = runBackendExposureScanner({ scanId });
+      log(`[backend_exposure_scanner] STARTING - scan_id=${scanId}`);
+      parallelModules.backend_exposure_scanner = runModuleWithTimeout('backend_exposure_scanner', 
+        () => runBackendExposureScanner({ scanId }), 
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('accessibility_scan')) {
-      parallelModules.accessibility_scan = runAccessibilityScan({ domain, scanId });
+      log(`[accessibility_scan] STARTING - scan_id=${scanId}`);
+      parallelModules.accessibility_scan = runModuleWithTimeout('accessibility_scan', 
+        () => runAccessibilityScan({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
     }
     
-    // Wait for all modules
+    // Wait for all modules with graceful degradation
+    let completedModules = 0;
+    const totalModules = Object.keys(parallelModules).length;
+    
     for (const [moduleName, promise] of Object.entries(parallelModules)) {
       try {
         const results = await promise;
-        log(`${moduleName} completed: ${results} findings`);
+        completedModules++;
         totalFindings += results;
+        log(`[SCAN_PROGRESS] ${completedModules}/${totalModules} modules completed - ${moduleName} found ${results} findings - scan_id=${scanId}`);
       } catch (error) {
-        log(`${moduleName} failed:`, error);
+        completedModules++;
+        log(`[${moduleName}] FAILED - ${(error as Error).message} - CONTINUING SCAN - scan_id=${scanId}`);
+        log(`[SCAN_PROGRESS] ${completedModules}/${totalModules} modules completed - ${moduleName} FAILED but scan continues - scan_id=${scanId}`);
+        
         await insertArtifact({
           type: 'scan_error',
           val_text: `Module ${moduleName} failed: ${(error as Error).message}`,

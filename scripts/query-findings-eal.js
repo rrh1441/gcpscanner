@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 
-const { createClient } = require('@supabase/supabase-js');
+const { Firestore } = require('@google-cloud/firestore');
 
 // Get credentials from environment
-const supabaseUrl = process.env.SUPABASE_URL || 'https://cssqcaieeixukjxqpynp.supabase.co';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+const projectId = process.env.GOOGLE_CLOUD_PROJECT_ID;
+const keyFilename = process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error('Missing Supabase credentials!');
-  console.error('Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables');
+if (!projectId) {
+  console.error('Missing Google Cloud credentials!');
+  console.error('Please set GOOGLE_CLOUD_PROJECT_ID environment variable');
   process.exit(1);
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const firestore = new Firestore({
+  projectId,
+  keyFilename
+});
 const scanId = process.argv[2] || 'I50E5WPlwFQ';
 
 async function queryFindings() {
@@ -21,16 +24,31 @@ async function queryFindings() {
 
     // Query 1: Breakdown by finding_type with EAL values
     console.log('1. BREAKDOWN BY FINDING_TYPE:\n');
-    const { data: typeBreakdown, error: typeError } = await supabase
-      .from('findings')
-      .select('finding_type, severity, eal_low, eal_ml, eal_high, eal_daily')
-      .eq('scan_id', scanId)
-      .order('finding_type');
-
-    if (typeError) {
-      console.error('Error querying findings:', typeError.message);
+    const findingsRef = firestore.collection('findings');
+    const typeQuery = findingsRef.where('scan_id', '==', scanId);
+    const typeSnapshot = await typeQuery.get();
+    
+    if (typeSnapshot.empty) {
+      console.error('No findings found for scan_id:', scanId);
       return;
     }
+    
+    const typeBreakdown = [];
+    typeSnapshot.forEach(doc => {
+      const data = doc.data();
+      typeBreakdown.push({
+        finding_type: data.finding_type,
+        severity: data.severity,
+        eal_low: data.eal_low,
+        eal_ml: data.eal_ml,
+        eal_high: data.eal_high,
+        eal_daily: data.eal_daily
+      });
+    });
+    
+    // Sort by finding_type
+    typeBreakdown.sort((a, b) => a.finding_type.localeCompare(b.finding_type));
+
 
     // Group by finding_type
     const grouped = {};
@@ -64,16 +82,14 @@ async function queryFindings() {
 
     // Query 2: Get 5-10 examples with full details
     console.log('\n2. SAMPLE FINDINGS (5-10 examples):\n');
-    const { data: examples, error: exampleError } = await supabase
-      .from('findings')
-      .select('*')
-      .eq('scan_id', scanId)
-      .limit(10);
+    const exampleQuery = findingsRef.where('scan_id', '==', scanId).limit(10);
+    const exampleSnapshot = await exampleQuery.get();
+    
+    const examples = [];
+    exampleSnapshot.forEach(doc => {
+      examples.push({ id: doc.id, ...doc.data() });
+    });
 
-    if (exampleError) {
-      console.error('Error getting examples:', exampleError.message);
-      return;
-    }
 
     examples.forEach((finding, index) => {
       console.log(`\nExample ${index + 1}:`);
@@ -90,15 +106,20 @@ async function queryFindings() {
 
     // Query 3: Summary statistics
     console.log('\n3. SUMMARY STATISTICS:\n');
-    const { data: allFindings, error: summaryError } = await supabase
-      .from('findings')
-      .select('eal_low, eal_ml, eal_high, eal_daily')
-      .eq('scan_id', scanId);
+    const summaryQuery = findingsRef.where('scan_id', '==', scanId);
+    const summarySnapshot = await summaryQuery.get();
+    
+    const allFindings = [];
+    summarySnapshot.forEach(doc => {
+      const data = doc.data();
+      allFindings.push({
+        eal_low: data.eal_low,
+        eal_ml: data.eal_ml,
+        eal_high: data.eal_high,
+        eal_daily: data.eal_daily
+      });
+    });
 
-    if (summaryError) {
-      console.error('Error getting summary:', summaryError.message);
-      return;
-    }
 
     const totalEAL = allFindings.reduce((acc, f) => {
       acc.low += f.eal_low || 0;

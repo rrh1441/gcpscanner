@@ -5,6 +5,10 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import express from 'express';
 import { processScan } from './worker.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 config();
 
@@ -28,6 +32,44 @@ function log(severity: 'ERROR' | 'INFO', message: string, context: object = {}) 
     timestamp: new Date().toISOString(),
     ...context
   }));
+}
+
+// Validate security tools at startup
+async function validateSecurityTools() {
+  const requiredTools = [
+    { name: 'sslscan', command: 'sslscan --version' },
+    { name: 'nuclei', command: 'nuclei --version' },
+    { name: 'trufflehog', command: 'trufflehog --version' },
+    { name: 'nmap', command: 'nmap --version' },
+    { name: 'python3', command: 'python3 --version' }
+  ];
+
+  const missingTools: string[] = [];
+  const availableTools: string[] = [];
+
+  for (const tool of requiredTools) {
+    try {
+      await execAsync(tool.command);
+      availableTools.push(tool.name);
+      log('INFO', `Tool validation passed: ${tool.name}`);
+    } catch (error) {
+      missingTools.push(tool.name);
+      log('ERROR', `Tool validation failed: ${tool.name}`, { 
+        error: (error as Error).message 
+      });
+    }
+  }
+
+  log('INFO', 'Tool validation completed', {
+    available: availableTools,
+    missing: missingTools,
+    total: requiredTools.length
+  });
+
+  // Continue even with missing tools for graceful degradation
+  if (missingTools.length > 0) {
+    log('INFO', `Starting with ${availableTools.length}/${requiredTools.length} tools available`);
+  }
 }
 
 // Handle Pub/Sub messages
@@ -128,15 +170,30 @@ const subscription = pubsub.subscription('scan-jobs-subscription', {
 // Note: Ack deadline is configured on the subscription itself in GCP Console
 // or via gcloud: gcloud pubsub subscriptions update scan-jobs-subscription --ack-deadline=600
 
-subscription.on('message', handleMessage);
-subscription.on('error', (error) => {
-  log('ERROR', 'Subscription error', { error: error.message });
-});
+// Initialize worker
+async function initializeWorker() {
+  log('INFO', 'Initializing Pub/Sub worker');
+  
+  // Validate security tools
+  await validateSecurityTools();
+  
+  // Set up subscription listeners
+  subscription.on('message', handleMessage);
+  subscription.on('error', (error) => {
+    log('ERROR', 'Subscription error', { error: error.message });
+  });
 
-log('INFO', 'Pub/Sub worker started', { 
-  subscription: 'scan-jobs-subscription',
-  ackDeadline: 600,
-  maxMessages: 1
+  log('INFO', 'Pub/Sub worker started', { 
+    subscription: 'scan-jobs-subscription',
+    ackDeadline: 600,
+    maxMessages: 1
+  });
+}
+
+// Start the worker
+initializeWorker().catch((error) => {
+  log('ERROR', 'Failed to initialize worker', { error: error.message });
+  process.exit(1);
 });
 
 // Graceful shutdown
