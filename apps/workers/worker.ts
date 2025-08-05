@@ -144,7 +144,7 @@ export async function processScan(job: ScanJob) {
       log(`[endpoint_discovery] STARTING - scan_id=${scanId}`);
       parallelModules.endpoint_discovery = runModuleWithTimeout('endpoint_discovery', 
         () => runEndpointDiscovery({ domain, scanId }), 
-        60 * 1000, scanId); // 1 minute timeout to test timeout mechanism
+        3 * 60 * 1000, scanId);
     }
     if (activeModules.includes('tls_scan')) {
       log(`[tls_scan] STARTING - scan_id=${scanId}`);
