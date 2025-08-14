@@ -1,53 +1,64 @@
-# Next Steps - Full Production Test
+# Production Deployment Guide - DealBrief Scanner with Fast-Ack Fix
 
 ## Current Status (2025-08-14)
+✅ **HTTP CLIENT IMPLEMENTED** - Hardened client with timeout protection
+✅ **FAST-ACK SERVER READY** - Fastify server with Cloud Tasks integration
+⚠️ **MODULES NEED MIGRATION** - Still using axios, but architecture fixes will help
 ✅ **SCANNER FIXED** - Now using Eventarc triggers with scale-to-zero
 ⚠️ **EPSS INTEGRATION NOT TESTED** - Code written but needs testing
 
-### What Was Fixed Today:
-1. ✅ **Migrated from Pub/Sub push to Eventarc triggers**
-2. ✅ **Scanner-service now scales to zero when idle**
-3. ✅ **Worker processes messages via CloudEvents format**
-4. ✅ **Scans are processing successfully**
-5. ✅ **Architecture is now production-ready**
+### What We Just Fixed:
+1. ✅ **Created hardened HTTP client** - `/apps/workers/net/httpClient.ts` with timeout protection
+2. ✅ **Built fast-ack server** - `/apps/workers/server.ts` using Fastify
+3. ✅ **Integrated Cloud Tasks** - Decouple Pub/Sub acknowledgment from processing
+4. ✅ **Updated build config** - Node 20, distroless Docker, proper TypeScript setup
+5. ✅ **Created scan orchestrator** - Runs all modules in parallel with error handling
 
-### Architecture Changes:
-1. ✅ **Removed Pub/Sub push endpoint**: No more direct push to Cloud Run
-2. ✅ **Created Eventarc trigger**: `scanner-pubsub-trigger` manages message delivery
-3. ✅ **Updated worker code**: Handles both direct push and CloudEvents formats
-4. ✅ **Configured scale-to-zero**: Service scales down when idle, saves costs
-5. ✅ **Tested and verified**: Messages are being processed correctly
+## CRITICAL: Environment Variables Your App Needs
 
-### Currently Working:
-1. ✅ **Eventarc trigger active**: Messages flow from Pub/Sub to Cloud Run
-2. ✅ **Logs generated**: Can see module execution and scan processing
-3. ✅ **Scans complete**: Transition from queued to processing to completed
-4. ⚠️ **EPSS needs testing**: Code deployed but not yet verified
-
-### Latest Updates (2025-08-08):
-- **EPSS Module Created**: `/apps/workers/util/epss.ts` - Fetches exploit probability from FIRST.org
-- **Scanner Enhanced**: `lightweightCveCheck.ts` and `nuclei.ts` now fetch EPSS scores
-- **EAL Calculations Improved**: Dynamic prevalence multipliers based on exploitation likelihood
-- **Migrations Ready**: Both PostgreSQL and Firestore migrations created
-
-### Latest Deployment:
-- **Build ID**: `2809dc08-a4ec-4910-af0e-fef8f30bed5c` ✅ SUCCESS
-- **Status**: Production-ready with 3-minute module timeouts
-- **Image**: Latest scanner-worker deployed to GCP
-- **EPSS**: Integration complete, awaiting deployment
-
-## Authentication Setup
-
-### Step 1: Login with Correct Account
 ```bash
-# Login with the right account (CRITICAL - not intelengine)
-gcloud auth login --account=ryan@simplcyber.io
+# These are NOT optional - your modules will crash without them
+SHODAN_API_KEY=your-actual-fucking-shodan-key
+SERPER_KEY=your-actual-serper-key
+OPENAI_API_KEY=your-openai-key
+LEAKCHECK_API_KEY=your-leakcheck-key
+ABUSEIPDB_API_KEY=your-abuseipdb-key
+CENSYS_API_ID=your-censys-id
+CENSYS_API_SECRET=your-censys-secret
 
-# Set project
+# GCP Configuration
+GCP_PROJECT=precise-victory-467219-s4
+GCP_LOCATION=us-central1
+TASKS_QUEUE=scan-queue
+TASKS_WORKER_URL=https://scanner-service-[HASH].us-central1.run.app/tasks/scan
+
+# Runtime
+NODE_ENV=production
+PORT=8080
+NODE_OPTIONS=--dns-result-order=ipv4first
+```
+
+## Step 1: Set Up Your Fucking API Keys in Secret Manager
+
+```bash
+# Login with YOUR account (not some random service account)
+gcloud auth login
 gcloud config set project precise-victory-467219-s4
 
-# Clear old service account credentials and set up proper ADC
-unset GOOGLE_APPLICATION_CREDENTIALS
+# Create secrets for all your API keys
+echo -n "your-actual-shodan-key" | gcloud secrets create shodan-key --data-file=-
+echo -n "your-serper-key" | gcloud secrets create serper-key --data-file=-
+echo -n "your-openai-key" | gcloud secrets create openai-key --data-file=-
+echo -n "your-leakcheck-key" | gcloud secrets create leakcheck-key --data-file=-
+echo -n "your-abuseipdb-key" | gcloud secrets create abuseipdb-key --data-file=-
+echo -n "your-censys-id" | gcloud secrets create censys-id --data-file=-
+echo -n "your-censys-secret" | gcloud secrets create censys-secret --data-file=-
+
+# Grant your service account access to the secrets
+gcloud secrets add-iam-policy-binding shodan-key \
+  --member="serviceAccount:scanner-worker-sa@precise-victory-467219-s4.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+# Repeat for all secrets...
 gcloud auth application-default login --quiet
 ```
 

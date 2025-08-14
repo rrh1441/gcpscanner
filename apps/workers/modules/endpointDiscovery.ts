@@ -31,7 +31,7 @@ const VIS_PROBE_TIMEOUT = 10_000;
 
 // Anti-infinite operation protection
 const MAX_TOTAL_OPERATIONS = 5000; // Maximum operations per scan
-const MAX_OPERATION_TIME_MS = 10 * 60 * 1000; // 10 minutes total
+const MAX_OPERATION_TIME_MS = 2 * 60 * 1000; // 2 minutes total (must be less than 3 minute module timeout)
 let operationCount = 0;
 let scanStartTime = 0;
 
@@ -789,31 +789,86 @@ const probeHighValuePaths = async (baseUrl: string): Promise<void> => {
 export async function runEndpointDiscovery(job: { domain: string; scanId?: string }): Promise<number> {
   log(`[endpointDiscovery] ⇢ start ${job.domain}`);
   const baseUrl = `https://${job.domain}`;
+  log(`[endpointDiscovery] baseUrl: ${baseUrl}`);
   
   // Initialize anti-infinite operation protection
   operationCount = 0;
   scanStartTime = Date.now();
+  log(`[endpointDiscovery] Initialized - operationCount: 0, scanStartTime: ${scanStartTime}`);
   
   discovered.clear();
   webAssets.clear();
   backendIdSet.clear();
   totalAssetSize = 0; // Reset memory usage counter
+  log(`[endpointDiscovery] Cleared all collections`);
 
-  // Existing discovery methods
-  await parseRobotsTxt(baseUrl);
-  await parseSitemap(`${baseUrl}/sitemap.xml`, baseUrl);
-  await crawlPage(baseUrl, 1, baseUrl, new Set<string>());
-  await bruteForce(baseUrl);
+  // Existing discovery methods with timeout protection
+  log(`[endpointDiscovery] Starting parseRobotsTxt...`);
+  try {
+    await Promise.race([
+      parseRobotsTxt(baseUrl),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('parseRobotsTxt timeout')), 30000))
+    ]);
+    log(`[endpointDiscovery] parseRobotsTxt completed successfully`);
+  } catch (e) {
+    log(`[endpointDiscovery] parseRobotsTxt failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  log(`[endpointDiscovery] Starting parseSitemap...`);
+  try {
+    await Promise.race([
+      parseSitemap(`${baseUrl}/sitemap.xml`, baseUrl),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('parseSitemap timeout')), 30000))
+    ]);
+    log(`[endpointDiscovery] parseSitemap completed successfully`);
+  } catch (e) {
+    log(`[endpointDiscovery] parseSitemap failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  log(`[endpointDiscovery] Starting crawlPage...`);
+  try {
+    await Promise.race([
+      crawlPage(baseUrl, 1, baseUrl, new Set<string>()),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('crawlPage timeout')), 60000))
+    ]);
+    log(`[endpointDiscovery] crawlPage completed successfully`);
+  } catch (e) {
+    log(`[endpointDiscovery] crawlPage failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  log(`[endpointDiscovery] Starting bruteForce...`);
+  try {
+    await Promise.race([
+      bruteForce(baseUrl),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('bruteForce timeout')), 30000))
+    ]);
+    log(`[endpointDiscovery] bruteForce completed successfully`);
+  } catch (e) {
+    log(`[endpointDiscovery] bruteForce failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
+  }
   
   // New: Probe high-value paths for secrets
-  await probeHighValuePaths(baseUrl);
+  log(`[endpointDiscovery] Starting probeHighValuePaths...`);
+  try {
+    await probeHighValuePaths(baseUrl);
+    log(`[endpointDiscovery] probeHighValuePaths completed successfully`);
+  } catch (e) {
+    log(`[endpointDiscovery] probeHighValuePaths failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   const endpoints = [...discovered.values()];
   const assets = [...webAssets.values()];
   const backendArr = [...backendIdSet.values()];
+  log(`[endpointDiscovery] Collected ${endpoints.length} endpoints, ${assets.length} assets, ${backendArr.length} backends`);
 
   /* ------- Visibility enrichment (public/static vs. auth) ---------------- */
-  await enrichVisibility(endpoints);
+  log(`[endpointDiscovery] Starting enrichVisibility...`);
+  try {
+    await enrichVisibility(endpoints);
+    log(`[endpointDiscovery] enrichVisibility completed successfully`);
+  } catch (e) {
+    log(`[endpointDiscovery] enrichVisibility failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // Save discovered endpoints
   if (endpoints.length) {

@@ -200,7 +200,7 @@ server.post('/', async (req, res) => {
       }
     }
     
-    // Return error to retry later
+    // Return error to retry later (with 600s ack deadline we have time)
     res.status(500).send('Internal Server Error');
   }
 });

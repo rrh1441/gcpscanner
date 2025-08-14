@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch worker.ts",
+    "dev": "tsx watch server.ts",
     "build": "tsc",
-    "start": "node dist/worker.js",
+    "start": "node dist/server.js",
     "test": "vitest",
     "test:run": "vitest run",
     "test:e2e": "PUPPETEER_E2E=1 vitest run",
@@ -32,6 +32,7 @@
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "fast-xml-parser": "^4.4.0",
+    "fastify": "^4.28.1",
     "file-type": "^19.0.0",
     "firebase-admin": "^13.4.0",
     "glob": "^11.0.3",
@@ -56,7 +57,7 @@
     "yauzl": "^3.2.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
+    "@types/node": "^22.17.1",
     "@types/semver": "^7.7.0",
     "@types/ws": "^8.5.8",
     "@types/yauzl": "^2.10.3",
