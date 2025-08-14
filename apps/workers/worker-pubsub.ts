@@ -1,12 +1,12 @@
-// Pub/Sub adapter for the existing worker
+// Pub/Sub push endpoint adapter for Cloud Run Service
 import { config } from 'dotenv';
-import { PubSub } from '@google-cloud/pubsub';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import express from 'express';
 import { processScan } from './worker.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { PubSub } from '@google-cloud/pubsub';
 
 const execAsync = promisify(exec);
 
@@ -72,62 +72,113 @@ async function validateSecurityTools() {
   }
 }
 
-// Handle Pub/Sub messages
-async function handleMessage(message: any) {
+// Start HTTP server for health checks and Pub/Sub push endpoint
+const server = express();
+server.use(express.json());
+
+// Health check endpoint
+server.get('/health', (req, res) => res.json({ status: 'healthy' }));
+
+// Pub/Sub push endpoint - handles both direct push and Eventarc CloudEvents
+server.post('/', async (req, res) => {
   let scanId: string | undefined;
   
   try {
-    const data = JSON.parse(message.data.toString());
-    scanId = data.scanId;
+    // Handle both direct Pub/Sub push AND Eventarc CloudEvents
+    let data: any;
     
-    // Validate required fields
-    if (!scanId || !data.companyName || !data.domain) {
-      log('ERROR', 'Invalid message format', { data });
-      message.ack(); // Acknowledge to prevent redelivery of bad messages
+    if (req.body.message) {
+      // Direct Pub/Sub push format
+      const message = req.body.message;
+      data = JSON.parse(Buffer.from(message.data, 'base64').toString());
+      log('INFO', 'Received direct Pub/Sub push message', { 
+        messageId: message.messageId 
+      });
+    } else if (req.headers['ce-type'] === 'google.cloud.pubsub.topic.v1.messagePublished') {
+      // Eventarc CloudEvents format
+      const pubsubMessage = req.body.message || req.body;
+      data = JSON.parse(Buffer.from(pubsubMessage.data, 'base64').toString());
+      log('INFO', 'Received Eventarc CloudEvent message', { 
+        ceId: req.headers['ce-id'],
+        ceSource: req.headers['ce-source']
+      });
+    } else {
+      log('ERROR', 'Unknown message format', { 
+        headers: req.headers,
+        bodyKeys: Object.keys(req.body) 
+      });
+      res.status(400).send('Bad Request: unknown message format');
       return;
     }
     
-    log('INFO', 'Received Pub/Sub message', { 
+    scanId = data.scanId;
+    
+    log('INFO', 'Processing scan request', { 
       scanId,
       companyName: data.companyName,
       domain: data.domain 
     });
     
-    // Update Firestore
-    await db.collection('scans').doc(scanId).update({
+    // Validate required fields
+    if (!scanId || !data.companyName || !data.domain) {
+      log('ERROR', 'Invalid message format', { data });
+      res.status(204).send(); // Acknowledge to prevent redelivery
+      return;
+    }
+    
+    // Create or update Firestore document
+    await db.collection('scans').doc(scanId).set({
       status: 'processing',
       updated_at: new Date(),
-      worker_id: process.env.K_REVISION || 'unknown'
-    });
-    
-    // Process using existing logic
-    await processScan({
-      scanId: data.scanId,
+      worker_id: process.env.K_REVISION || 'unknown',
+      started_at: new Date(),
+      scanId: scanId,
       companyName: data.companyName,
       domain: data.domain,
-      createdAt: data.createdAt
+      createdAt: data.createdAt || new Date().toISOString()
+    }, { merge: true });
+    
+    // Process the scan
+    await processScan({
+      scanId: data.scanId,
+      domain: data.domain,
+      companyName: data.companyName,
+      createdAt: data.createdAt || new Date().toISOString()
     });
     
-    // Update Firestore completion
-    await db.collection('scans').doc(scanId).update({
+    // Update Firestore with completion
+    await db.collection('scans').doc(scanId).set({
       status: 'completed',
       completed_at: new Date(),
-      total_findings: 0 // Will be updated by processScan
-    });
-    
-    // Trigger report generation
-    await pubsub.topic('report-generation').publishMessage({
       json: { 
         scanId,
         companyName: data.companyName,
         domain: data.domain 
       }
-    });
+    }, { merge: true });
+    
+    // Emit report-generation event
+    try {
+      await pubsub.topic('report-generation').publishMessage({
+        json: {
+          scanId,
+          companyName: data.companyName,
+          domain: data.domain
+        }
+      });
+      log('INFO', 'Published report-generation event', { scanId });
+    } catch (publishError) {
+      log('ERROR', 'Failed to publish report-generation event', {
+        scanId,
+        error: (publishError as Error).message
+      });
+    }
     
     log('INFO', 'Successfully processed scan', { scanId });
-    message.ack();
+    res.status(204).send(); // Acknowledge success
+    
   } catch (error) {
-    log('ERROR', 'Failed to process message', { 
+    log('ERROR', 'Failed to process push message', { 
       error: (error as Error).message,
       stack: (error as Error).stack,
       scanId
@@ -136,11 +187,11 @@ async function handleMessage(message: any) {
     // Update Firestore with failure status if we have a scanId
     if (scanId) {
       try {
-        await db.collection('scans').doc(scanId).update({
+        await db.collection('scans').doc(scanId).set({
           status: 'failed',
           error: (error as Error).message,
           failed_at: new Date()
-        });
+        }, { merge: true });
       } catch (updateError) {
         log('ERROR', 'Failed to update scan status', { 
           scanId,
@@ -149,56 +200,15 @@ async function handleMessage(message: any) {
       }
     }
     
-    // Nack the message to retry later
-    message.nack();
-  }
-}
-
-// Start HTTP server for health checks
-const server = express();
-server.get('/health', (req, res) => res.json({ status: 'healthy' }));
-server.listen(process.env.PORT || 8080);
-
-// Configure subscription with proper acknowledgment deadline
-const subscription = pubsub.subscription('scan-jobs-subscription', {
-  flowControl: {
-    maxMessages: 1, // Process one scan at a time
-    allowExcessMessages: false
+    // Return error to retry later
+    res.status(500).send('Internal Server Error');
   }
 });
 
-// Note: Ack deadline is configured on the subscription itself in GCP Console
-// or via gcloud: gcloud pubsub subscriptions update scan-jobs-subscription --ack-deadline=600
-
-// Initialize worker
-async function initializeWorker() {
-  log('INFO', 'Initializing Pub/Sub worker');
-  
-  // Validate security tools
-  await validateSecurityTools();
-  
-  // Set up subscription listeners
-  subscription.on('message', handleMessage);
-  subscription.on('error', (error) => {
-    log('ERROR', 'Subscription error', { error: error.message });
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => {
+  log('INFO', 'HTTP server listening', { port: PORT });
+  validateSecurityTools().catch((error) => {
+    log('ERROR', 'Security tools validation failed', { error: error.message });
   });
-
-  log('INFO', 'Pub/Sub worker started', { 
-    subscription: 'scan-jobs-subscription',
-    ackDeadline: 600,
-    maxMessages: 1
-  });
-}
-
-// Start the worker
-initializeWorker().catch((error) => {
-  log('ERROR', 'Failed to initialize worker', { error: error.message });
-  process.exit(1);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  log('INFO', 'SIGTERM received, closing subscription');
-  await subscription.close();
-  process.exit(0);
 });

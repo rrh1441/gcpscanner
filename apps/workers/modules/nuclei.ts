@@ -22,6 +22,7 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
+import { getEpssScores } from '../util/epss.js';
 import { logLegacy as log } from '../core/logger.js';
 import { 
   runNuclei as runNucleiWrapper, 
@@ -65,6 +66,29 @@ async function validateDependencies(): Promise<boolean> {
 }
 
 async function processNucleiResults(results: any[], scanId: string, category: 'general' | 'cve' | 'workflow', templateContext?: string): Promise<number> {
+  // Collect all CVE IDs for batch EPSS fetching
+  const cveIds: string[] = [];
+  for (const vuln of results) {
+    const templateId = vuln['template-id'] || vuln.template || 'unknown';
+    const name = vuln.info?.name || vuln.name || templateId;
+    const cveMatch = templateId.match(/(CVE-\d{4}-\d+)/i) || 
+                     name.match(/(CVE-\d{4}-\d+)/i);
+    if (cveMatch) {
+      cveIds.push(cveMatch[1].toUpperCase());
+    }
+  }
+  
+  // Fetch EPSS scores for all CVEs
+  let epssScores = new Map<string, number>();
+  if (cveIds.length > 0) {
+    try {
+      epssScores = await getEpssScores(cveIds);
+      log(`[nuclei] Fetched EPSS scores for ${epssScores.size} CVEs`);
+    } catch (error) {
+      log(`[nuclei] Failed to fetch EPSS scores:`, (error as Error).message);
+    }
+  }
+  
   let count = 0;
   
   for (const vuln of results) {
@@ -92,6 +116,12 @@ async function processNucleiResults(results: any[], scanId: string, category: 'g
       if (cveMatch) {
         meta.cve_id = cveMatch[1].toUpperCase();
         meta.verified_cve = true;
+        
+        // Add EPSS score if available
+        const epssScore = epssScores.get(meta.cve_id);
+        if (epssScore !== undefined) {
+          meta.epss_score = epssScore;
+        }
       }
 
       const artifactId = await insertArtifact({

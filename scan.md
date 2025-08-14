@@ -1,21 +1,20 @@
-# How to Trigger a Scan
+# How to Trigger a Scan - GCP Deployment
 
 ## Quick Start - Single Scan
 
-### Using curl (Recommended)
+### Using the GCP Scanner API (Recommended)
 ```bash
-curl -X POST https://dealbrief-scanner.fly.dev/scan \
+curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan \
   -H "Content-Type: application/json" \
   -d '{"companyName": "Company Name", "domain": "example.com"}'
 ```
 
-### Using the Web Interface
-Visit https://dealbrief-scanner.fly.dev and fill out the form
+**Note:** The API uses camelCase field names (`companyName`, not `company_name`)
 
-## Response Format
+### Response Format
 ```json
 {
-  "scanId": "9Pzz-2u8Ehp",
+  "scanId": "E_P4qM_Szq6",
   "status": "queued",
   "companyName": "Company Name", 
   "domain": "example.com",
@@ -26,34 +25,33 @@ Visit https://dealbrief-scanner.fly.dev and fill out the form
 
 ## Check Scan Results
 
-### Query Database for Findings
-```bash
-# Start database proxy (if not already running)
-fly proxy 5433 -a dealbrief-scanner-db &
-
-# Query findings for a specific domain
-export PGPASSWORD=EWLwYpuVkFIb
-psql "postgresql://postgres@localhost:5433/postgres?sslmode=disable" -c "
-SELECT type, val_text, severity, created_at 
-FROM artifacts 
-WHERE val_text ILIKE '%domain-name%' 
-ORDER BY created_at DESC 
-LIMIT 10;
-"
-```
-
 ### Check Scan Status via API
 ```bash
 # Replace SCAN_ID with actual scan ID from response
-curl https://dealbrief-scanner.fly.dev/scan/SCAN_ID/status
-curl https://dealbrief-scanner.fly.dev/scan/SCAN_ID/findings
+curl https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/SCAN_ID/status
+```
+
+### Check Scan Findings
+```bash
+curl https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/SCAN_ID/findings
+```
+
+### Query Firestore for Results
+```bash
+# Get scan document
+gcloud firestore documents get scans/SCAN_ID \
+  --project=precise-victory-467219-s4 \
+  --format=json
+
+# Note: gcloud firestore commands require additional configuration
+# Use the API endpoints above for easier access
 ```
 
 ## Bulk Scans
 
 ### JSON Array
 ```bash
-curl -X POST https://dealbrief-scanner.fly.dev/scan/bulk \
+curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/bulk \
   -H "Content-Type: application/json" \
   -d '[
     {"companyName": "Company 1", "domain": "example1.com"},
@@ -63,7 +61,7 @@ curl -X POST https://dealbrief-scanner.fly.dev/scan/bulk \
 
 ### CSV Upload
 ```bash
-curl -X POST https://dealbrief-scanner.fly.dev/scan/csv \
+curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/csv \
   -F "file=@companies.csv"
 ```
 
@@ -71,34 +69,143 @@ curl -X POST https://dealbrief-scanner.fly.dev/scan/csv \
 
 ### Add Tags
 ```bash
-curl -X POST https://dealbrief-scanner.fly.dev/scan \
+curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan \
   -H "Content-Type: application/json" \
   -d '{"companyName": "Company Name", "domain": "example.com", "tags": ["priority", "customer"]}'
 ```
 
 ### Scan Tiers
-- **TIER_1**: Safe, automated modules (default)
+- **TIER_1**: Safe, automated modules (default) - 13 modules
 - **TIER_2**: Deep scanning with active probing (requires authorization)
 
-## Alternative Endpoints
-- `POST /scans` - Frontend compatibility
-- `POST /api/scans` - Another frontend compatibility endpoint
+## GCP Architecture
 
-## Test Scripts (Local Development)
+### Components
+1. **scanner-api**: Cloud Run service that receives scan requests
+2. **scan-jobs**: Pub/Sub topic for queuing scan jobs
+3. **scanner-pubsub-trigger**: Eventarc trigger that connects Pub/Sub to Cloud Run
+4. **scanner-service**: Cloud Run service that processes scans (scales to zero)
+5. **Firestore**: Stores scan results, findings, and artifacts
+
+### Data Flow
+1. POST request to scanner-api → Creates scan in Firestore
+2. scanner-api publishes message to scan-jobs Pub/Sub topic
+3. Eventarc trigger receives Pub/Sub message and invokes scanner-service
+4. scanner-service processes the scan (auto-scales from 0 to handle request)
+5. Results stored in Firestore collections (scans, findings, artifacts)
+6. Service scales back to zero when idle
+
+## Monitoring
+
+### Check Pub/Sub Queue
 ```bash
-# Trigger test scan to production
-node scripts/trigger-test-scan.js
+# Check for pending messages (Eventarc manages the subscription)
+gcloud pubsub subscriptions pull eventarc-us-central1-scanner-pubsub-trigger-sub-798 \
+  --project=precise-victory-467219-s4 \
+  --limit=5 \
+  --format=json
 
-# Test individual scans locally  
-node test-batch-scan.js
-
-# Test bulk scan endpoints
-node test-bulk-scan.js
+# Check if Eventarc trigger is active
+gcloud eventarc triggers describe scanner-pubsub-trigger \
+  --location=us-central1 \
+  --project=precise-victory-467219-s4 \
+  --format="value(state)"
 ```
+
+### View Scanner Logs
+```bash
+# Scanner API logs
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=scanner-api" \
+  --project=precise-victory-467219-s4 \
+  --format="table(timestamp,textPayload)" \
+  --limit=20 \
+  --order=desc
+
+# Scanner Service (worker) logs
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=scanner-service" \
+  --project=precise-victory-467219-s4 \
+  --format="table(timestamp,textPayload)" \
+  --limit=20 \
+  --order=desc
+```
+
+## Troubleshooting
+
+### Issue: Scan stuck in "processing"
+**Cause**: The scanner-service may not be receiving messages from Eventarc
+**Solution**: 
+1. Check if Eventarc trigger is active: `gcloud eventarc triggers describe scanner-pubsub-trigger --location=us-central1 --project=precise-victory-467219-s4`
+2. Check if messages are in the queue (see monitoring commands)
+3. Verify scanner-service can scale: `gcloud run services describe scanner-service --region=us-central1 --project=precise-victory-467219-s4`
+4. Check worker logs for errors
+
+### Issue: No findings returned
+**Cause**: Worker may not have completed or may have failed
+**Solution**: Check scanner-service logs for the scan ID
+
+### Issue: 400 Error "Company name and domain are required"
+**Cause**: Using wrong field names
+**Solution**: Use camelCase: `companyName` and `domain`
 
 ## Common Finding Types
 - `tls_weakness` - SSL/TLS vulnerabilities
 - `typo_domain` - Domain typosquatting threats
 - `discovered_endpoints` - Exposed endpoints
 - `breach_directory_summary` - Breach database checks
-- And many more security findings...
+- `spf_dmarc_issues` - Email security configuration
+- `config_exposure` - Exposed configuration files
+- `tech_stack` - Detected technologies
+- `accessibility_issues` - ADA compliance issues
+- `client_secrets` - Exposed API keys/secrets
+- `backend_exposure` - Exposed backend services
+- `abuse_intel` - IP reputation issues
+- `nuclei_findings` - Vulnerability scanner results
+
+## Example: Full Scan Test
+
+```bash
+# 1. Trigger scan
+RESPONSE=$(curl -s -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan \
+  -H "Content-Type: application/json" \
+  -d '{"companyName": "Test Company", "domain": "example.com"}')
+
+# 2. Extract scan ID
+SCAN_ID=$(echo $RESPONSE | grep -o '"scanId":"[^"]*' | cut -d'"' -f4)
+echo "Scan ID: $SCAN_ID"
+
+# 3. Wait for processing
+sleep 60
+
+# 4. Check status
+curl https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/$SCAN_ID/status
+
+# 5. Get findings
+curl https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/$SCAN_ID/findings
+```
+
+## Report Generation
+
+After scan completion, generate intelligence reports:
+
+```bash
+# Generate report (requires report service deployment)
+curl -X POST https://scanner-reports-[hash].run.app/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"scanId": "YOUR_SCAN_ID", "reportType": "standard", "format": "both"}'
+```
+
+Report types:
+- `summary`: Executive summary (Critical/High only, 2-3 pages)
+- `standard`: IT management report (Critical/High/Medium, 5-10 pages)
+- `detailed`: Security team report (All findings, 10+ pages)
+
+Formats:
+- `html`: Web viewable
+- `pdf`: Downloadable PDF
+- `both`: Both formats
+
+---
+
+*Last updated: 2025-08-14*
+*Deployment: GCP (precise-victory-467219-s4)*
+*Architecture: Eventarc-triggered Cloud Run with scale-to-zero*
