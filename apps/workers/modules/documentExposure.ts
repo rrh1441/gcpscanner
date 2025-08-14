@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import * as crypto from 'node:crypto';
 import { createRequire } from 'node:module';
-import axios, { AxiosResponse } from 'axios';
+import { httpRequest, httpGetText } from '../net/httpClient.js';
 import { fileTypeFromBuffer } from 'file-type';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import luhn from 'luhn';
@@ -205,11 +205,15 @@ async function gptRelevant(sample: string, sig: BrandSignature): Promise<boolean
 async function fetchSnippet(domain: string): Promise<string> {
   if (!process.env.SERPER_KEY) return '';
   try {
-    const { data } = await axios.post(
-      SERPER_URL,
-      { q: `site:${domain}`, num: 1 },
-      { headers: { 'X-API-KEY': process.env.SERPER_KEY } }
-    );
+    const response = await httpRequest({
+      url: SERPER_URL,
+      method: 'POST',
+      headers: { 'X-API-KEY': process.env.SERPER_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: `site:${domain}`, num: 1 }),
+      totalTimeoutMs: 10000,
+      forceIPv4: true
+    });
+    const data = JSON.parse(new TextDecoder('utf-8').decode(response.body));
     return data.organic?.[0]?.snippet ?? '';
   } catch {
     return '';
@@ -394,7 +398,12 @@ async function downloadAndAnalyze(
     const { hostname } = new URL(urlStr);
     if (SKIP_HOSTS.has(hostname)) return null; // ← Skip obvious public pages
 
-    const head = await axios.head(urlStr, { timeout: 10_000 }).catch<AxiosResponse | null>(() => null);
+    const head = await httpRequest({
+      url: urlStr,
+      method: 'HEAD',
+      totalTimeoutMs: 10000,
+      forceIPv4: true
+    }).catch(() => null);
     if (parseInt(head?.headers['content-length'] ?? '0', 10) > 15 * 1024 * 1024) return null;
 
     /* -------------------------------------------------------------------- */
@@ -406,8 +415,14 @@ async function downloadAndAnalyze(
       if (!/\.pdf$|\.docx$|\.xlsx$/i.test(urlStr)) return null;
     }
 
-    const res = await axios.get<ArrayBuffer>(urlStr, { responseType: 'arraybuffer', timeout: 30_000 });
-    const buf = Buffer.from(res.data);
+    const res = await httpRequest({
+      url: urlStr,
+      method: 'GET',
+      totalTimeoutMs: 30000,
+      forceIPv4: true,
+      maxBodyBytes: 10_000_000
+    });
+    const buf = Buffer.from(res.body);
 
     const mimeInfo = await fileTypeFromBuffer(buf).then((ft) => ({
       reported,
@@ -494,7 +509,15 @@ export async function runDocumentExposure(job: {
     allQueries.map(async ({query, category}, index) => {
       try {
         log(`[documentExposure] Serper API call ${index + 1}: "${query}"`);
-        const { data } = await axios.post(SERPER_URL, { q: query, num: 20 }, { headers });
+        const response = await httpRequest({
+          url: SERPER_URL,
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ q: query, num: 20 }),
+          totalTimeoutMs: 10000,
+          forceIPv4: true
+        });
+        const data = JSON.parse(new TextDecoder('utf-8').decode(response.body));
         const results = data.organic ?? [];
         log(`[documentExposure] Query ${index + 1} returned ${results.length} results`);
         return { category, query, results, success: true };

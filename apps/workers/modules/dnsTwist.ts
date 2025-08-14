@@ -21,7 +21,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as https from 'node:https';
-import axios, { AxiosRequestConfig } from 'axios';
+import { httpClient, AxiosRequestConfig } from '../net/httpClient.js';
 import { parse } from 'node-html-parser';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
@@ -65,7 +65,7 @@ async function redirectsToOrigin(testDomain: string, originDomain: string): Prom
       httpsAgent: new https.Agent({ rejectUnauthorized: false }),
     };
     try {
-      const resp = await axios(cfg);
+      const resp = await httpClient.request(cfg);
       const location = resp.headers.location;
       if (!location) return false;
       const host = location.replace(/^https?:\/\//i, '').split('/')[0];
@@ -102,7 +102,7 @@ async function getDnsRecords(domain: string): Promise<{ mx: string[]; ns: string
 /** Query crt.sh JSON endpoint – returns up to five unique certs. */
 async function checkCTLogs(domain: string): Promise<Array<{ issuer_name: string; common_name: string }>> {
   try {
-    const { data } = await axios.get(`https://crt.sh/?q=%25.${domain}&output=json`, { timeout: 10_000 });
+    const { data } = await httpClient.get(`https://crt.sh/?q=%25.${domain}&output=json`, { timeout: 10_000 });
     if (!Array.isArray(data)) return [];
     const uniq = new Map<string, { issuer_name: string; common_name: string }>();
     for (const cert of data) {
@@ -162,7 +162,7 @@ async function checkMxRecords(domain: string): Promise<boolean> {
  */
 async function checkTlsCertificate(domain: string): Promise<boolean> {
   try {
-    const { data } = await axios.get(`https://crt.sh/?q=%25.${domain}&output=json`, { timeout: 10_000 });
+    const { data } = await httpClient.get(`https://crt.sh/?q=%25.${domain}&output=json`, { timeout: 10_000 });
     return Array.isArray(data) && data.length > 0;
   } catch (err) {
     log(`[dnstwist] TLS cert check failed for ${domain}:`, (err as Error).message);
@@ -377,7 +377,7 @@ async function analyzeHttpContent(domain: string): Promise<{
 
   for (const proto of ['https', 'http'] as const) {
     try {
-      const response = await axios.get(`${proto}://${domain}`, {
+      const response = await httpClient.get(`${proto}://${domain}`, {
         timeout: 10_000,
         maxRedirects: 5,
         httpsAgent: new https.Agent({ rejectUnauthorized: false }),
@@ -415,7 +415,7 @@ async function analyzeHttpContent(domain: string): Promise<{
 async function fetchWithFallback(domain: string): Promise<string | null> {
   for (const proto of ['https', 'http'] as const) {
     try {
-      const { data } = await axios.get(`${proto}://${domain}`, {
+      const { data } = await httpClient.get(`${proto}://${domain}`, {
         timeout: 7_000,
         httpsAgent: new https.Agent({ rejectUnauthorized: false }),
       });
@@ -439,7 +439,7 @@ async function getSiteSnippet(domain: string): Promise<{ snippet: string; title:
 
   try {
     log(`[dnstwist] 🔍 Calling Serper API for ${domain}`);
-    const response = await axios.post('https://google.serper.dev/search', {
+    const response = await httpClient.post('https://google.serper.dev/search', {
       q: `site:${domain}`,
       num: 1
     }, {
@@ -610,7 +610,7 @@ Respond with ONLY a JSON object:
   return rateLimitedOpenAI(async () => {
     try {
       log(`[dnstwist] 🤖 Calling OpenAI API to compare ${originalDomain} vs ${typosquatDomain}`);
-      const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+      const response = await httpClient.post('https://api.openai.com/v1/chat/completions', {
         model: 'gpt-4o-mini-2024-07-18',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 300,
@@ -704,7 +704,7 @@ async function getWhoisData(domain: string): Promise<{ registrar?: string; regis
     }
 
     try {
-      const response = await axios.get('https://www.whoisxmlapi.com/whoisserver/WhoisService', {
+      const response = await httpClient.get('https://www.whoisxmlapi.com/whoisserver/WhoisService', {
         params: {
           apiKey,
           domainName: domain,

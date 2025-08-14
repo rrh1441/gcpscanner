@@ -50,6 +50,7 @@
     "pdfjs-dist": "^4.0.379",
     "puppeteer": "^23.11.1",
     "semver": "^7.6.3",
+    "undici": "^7.13.0",
     "wappalyzer": "^7.0.3",
     "ws": "^8.17.1",
     "xlsx": "^0.18.5",
@@ -65,7 +66,7 @@
     "@typescript-eslint/parser": "^6.21.0",
     "@vitest/coverage-v8": "^2.1.8",
     "eslint": "^8.57.0",
-    "tsx": "^4.19.2",
+    "tsx": "^4.19.4",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

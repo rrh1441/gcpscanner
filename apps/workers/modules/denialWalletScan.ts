@@ -5,7 +5,7 @@
  * spending when abused, focusing on real economic impact over theoretical vulnerabilities.
  */
 
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { executeModule, apiCall } from '../util/errorHandler.js';
@@ -252,7 +252,7 @@ async function getEndpointArtifacts(scanId: string): Promise<EndpointReport[]> {
  */
 async function analyzeEndpointResponse(url: string): Promise<BackendIndicators> {
   const operation = async () => {
-    const response = await axios.get(url, {
+    const response = await httpClient.get(url, {
       timeout: SAFETY_CONTROLS.TIMEOUT_SECONDS * 1000,
       validateStatus: () => true, // Accept all status codes
       maxRedirects: 2
@@ -379,7 +379,7 @@ async function classifyAuthBypass(endpoint: string): Promise<AuthBypassAnalysis>
 
     // Test 1: Direct access without authentication
     try {
-      const response = await axios.get(endpoint, {
+      const response = await httpClient.get(endpoint, {
         timeout: SAFETY_CONTROLS.TIMEOUT_SECONDS * 1000,
         validateStatus: () => true
       });
@@ -408,7 +408,7 @@ async function classifyAuthBypass(endpoint: string): Promise<AuthBypassAnalysis>
       ];
 
       for (const headers of headerTests) {
-        const response = await axios.get(endpoint, {
+        const response = await httpClient.get(endpoint, {
           headers,
           timeout: SAFETY_CONTROLS.TIMEOUT_SECONDS * 1000,
           validateStatus: () => true
@@ -472,7 +472,7 @@ async function measureSustainedRPS(endpoint: string, safetyController: DoWSafety
     
     // Send requests at target RPS
     for (let i = 0; i < currentRPS * TESTING_CONFIG.TEST_DURATION_SECONDS; i++) {
-      const requestPromise = axios.get(endpoint, {
+      const requestPromise = httpClient.get(endpoint, {
         timeout: SAFETY_CONTROLS.TIMEOUT_SECONDS * 1000,
         validateStatus: (status) => status < 500 // Treat 4xx as success for RPS testing
       }).then(() => {

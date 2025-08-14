@@ -8,7 +8,7 @@
  */
 
 import { OpenAI } from 'openai';
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import * as https from 'node:https';
 import { insertArtifact } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
@@ -268,7 +268,7 @@ async function probeGeneratedPaths(baseUrl: string, paths: GeneratedPath[]): Pro
                 const url = `${baseUrl}${pathInfo.path}`;
                 
                 try {
-                    const response = await axios.head(url, {
+                    const response = await httpClient.head(url, {
                         timeout: PROBE_TIMEOUT,
                         httpsAgent,
                         headers: {

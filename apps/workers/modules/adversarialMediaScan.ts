@@ -5,7 +5,7 @@
  * about target companies using Serper.dev's search API.
  */
 
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 
@@ -156,7 +156,7 @@ async function executeSearchQuery(query: string, apiKey: string): Promise<Serper
   try {
     log(`Executing search query: "${query.substring(0, 50)}..."`);
     
-    const response = await axios.post(SERPER_ENDPOINT, {
+    const response = await httpClient.post(SERPER_ENDPOINT, {
       q: query,
       num: MAX_RESULTS_PER_QUERY,
       tbm: 'nws', // News search

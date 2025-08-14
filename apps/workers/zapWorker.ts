@@ -149,7 +149,7 @@ async function startZAPWorker(): Promise<void> {
   while (!isShuttingDown) {
     try {
       // Look for any available jobs - we'll filter for ZAP jobs
-      const job = await queue.getNextJob() as ZAPJob | null;
+      const job = await queue.getNextJob() as unknown as ZAPJob | null;
       
       if (job && !isShuttingDown) {
         // Filter for ZAP jobs only - skip non-ZAP jobs

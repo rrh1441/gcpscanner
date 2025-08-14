@@ -10,7 +10,7 @@
  * =============================================================================
  */
 
-import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { httpRequest, httpGetText } from '../net/httpClient.js';
 import { parse as parseHTML } from 'node-html-parser';
 import { insertArtifact } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
@@ -23,7 +23,7 @@ import { simple } from 'acorn-walk';
 
 const MAX_CRAWL_DEPTH = 2;
 const MAX_CONCURRENT_REQUESTS = 5;
-const REQUEST_TIMEOUT = 8_000;
+const REQUEST_TIMEOUT = 10_000;
 const DELAY_BETWEEN_CHUNKS_MS = 500;
 const MAX_JS_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1 MB
 const VIS_PROBE_CONCURRENCY = 5;
@@ -184,16 +184,23 @@ export interface BackendIdentifier {
 
 // ---------- Endpoint Visibility Checking ------------------------------------
 
-async function safeVisibilityRequest(method: string, target: string): Promise<AxiosResponse | null> {
+async function safeVisibilityRequest(method: string, target: string): Promise<any | null> {
   try {
-    return await axios.request({
+    const response = await httpRequest({
       url: target,
       method: method as any,
-      timeout: VIS_PROBE_TIMEOUT,
-      httpsAgent: HTTPS_AGENT,
+      totalTimeoutMs: VIS_PROBE_TIMEOUT,
+      connectTimeoutMs: 3000,
+      firstByteTimeoutMs: 5000,
+      idleSocketTimeoutMs: 5000,
+      forceIPv4: true,
       maxRedirects: 5,
-      validateStatus: () => true
     });
+    return {
+      status: response.status,
+      data: new TextDecoder('utf-8').decode(response.body),
+      headers: response.headers
+    };
   } catch {
     return null;
   }
@@ -270,11 +277,24 @@ const getRandomUA = (): string =>
 
 const safeRequest = async (
   url: string,
-  cfg: AxiosRequestConfig
+  cfg: any = {}
 ): Promise<SafeResult> => {
   try {
-    const res: AxiosResponse = await axios({ url, ...cfg });
-    return { ok: true, status: res.status, data: res.data };
+    const res = await httpRequest({
+      url,
+      method: cfg.method || 'GET',
+      headers: cfg.headers || { 'User-Agent': getRandomUA() },
+      totalTimeoutMs: cfg.timeout || REQUEST_TIMEOUT,
+      connectTimeoutMs: 3000,
+      firstByteTimeoutMs: 5000,
+      idleSocketTimeoutMs: 5000,
+      forceIPv4: true,
+      maxRedirects: cfg.maxRedirects || 5,
+      maxBodyBytes: cfg.responseType === 'arraybuffer' ? 10_000_000 : 5_000_000,
+    });
+    const data = cfg.responseType === 'arraybuffer' ? 
+      res.body : new TextDecoder('utf-8').decode(res.body);
+    return { ok: true, status: res.status, data };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown network error';
     return { ok: false, error: message };

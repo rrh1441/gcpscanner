@@ -5,7 +5,7 @@
  * that create genuine ADA lawsuit risk for companies.
  */
 
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { createHash } from 'node:crypto';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
@@ -90,7 +90,7 @@ async function discoverTestablePages(domain: string): Promise<string[]> {
     const sitemaps = [`https://${domain}/sitemap.xml`, `https://www.${domain}/sitemap.xml`];
     for (const sitemapUrl of sitemaps) {
       try {
-        const { data } = await axios.get(sitemapUrl, { timeout: 10000 });
+        const { data } = await httpClient.get(sitemapUrl, { timeout: 10000 });
         const urlMatches = data.match(/<loc>(.*?)<\/loc>/g);
         if (urlMatches) {
           urlMatches.forEach((match: string) => {

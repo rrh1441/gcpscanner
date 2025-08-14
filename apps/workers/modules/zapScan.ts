@@ -277,7 +277,7 @@ async function executeZAPBaseline(target: string, assetType: string, scanId: str
   });
 
   if (!dirResult.success) {
-    throw new Error(`Failed to create artifacts directory: ${dirResult.error}`);
+    throw new Error(`Failed to create artifacts directory: ${(dirResult as any).error}`);
   }
 
   log(`Running ZAP baseline scan for ${target}`);
@@ -345,7 +345,7 @@ async function executeZAPBaseline(target: string, assetType: string, scanId: str
           );
 
           if (!cleanupResult.success) {
-            log(`Failed to cleanup ZAP output file: ${cleanupResult.error}`);
+            log(`Failed to cleanup ZAP output file: ${(cleanupResult as any).error}`);
           }
           
           resolve(findings);
@@ -394,7 +394,7 @@ async function parseZAPResults(outputFile: string, target: string, assetType: st
   });
 
   if (!result.success) {
-    throw new Error(`Failed to parse ZAP results: ${result.error}`);
+    throw new Error(`Failed to parse ZAP results: ${(result as any).error}`);
   }
 
   const zapResult = result.data;

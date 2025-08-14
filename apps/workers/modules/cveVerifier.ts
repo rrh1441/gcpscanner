@@ -4,7 +4,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { glob } from 'glob';
 import semver from 'semver';
 import { logLegacy as rootLog } from '../core/logger.js';
@@ -42,7 +42,7 @@ async function getUbuntuFixedVersion(cve: string): Promise<string | undefined> {
 
   try {
     log(`Checking Ubuntu fix data for ${cve}`);
-    const { data } = await axios.get(
+    const { data } = await httpClient.get(
       `https://ubuntu.com/security/${cve}.json`,
       { timeout: 8000 }
     );
@@ -70,7 +70,7 @@ async function getUbuntuFixedVersion(cve: string): Promise<string | undefined> {
 async function getRHELFixedVersion(cve: string): Promise<string | undefined> {
   try {
     // RHEL/CentOS security data - simplified approach
-    const { data } = await axios.get(
+    const { data } = await httpClient.get(
       `https://access.redhat.com/hydra/rest/securitydata/cve/${cve}.json`,
       { timeout: 8000 }
     );
@@ -219,7 +219,7 @@ async function batchEPSS(ids: string[]): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
   if (!ids.length) return out;
   try {
-    const { data } = await axios.get(`https://api.first.org/data/v1/epss?cve=${ids.join(',')}`, { timeout: 10_000 });
+    const { data } = await httpClient.get(`https://api.first.org/data/v1/epss?cve=${ids.join(',')}`, { timeout: 10_000 });
     (data.data as any[]).forEach((d: any) => { out[d.cve] = Number(d.epss) || 0; });
   } catch { ids.forEach(id => (out[id] = 0)); }
   return out;

@@ -17,7 +17,7 @@
  * =============================================================================
  */
 
-import axios, { Method } from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
@@ -89,7 +89,7 @@ async function establishBaseline(endpoint: DiscoveredEndpoint): Promise<{ hasRat
         // Send chunk of requests
         for (let i = 0; i < chunkSize; i++) {
             promises.push(
-                axios.post(endpoint.url, {u:'test',p:'test'}, { 
+                httpClient.post(endpoint.url, {u:'test',p:'test'}, { 
                     timeout: REQUEST_TIMEOUT, 
                     validateStatus: () => true 
                 }).catch(error => ({ 
@@ -142,7 +142,7 @@ async function testBypassTechniques(endpoint: DiscoveredEndpoint): Promise<RateL
     // 1. IP Spoofing Headers
     for (const header of IP_SPOOFING_HEADERS) {
         try {
-            const response = await axios.post(endpoint.url, testPayload, { 
+            const response = await httpClient.post(endpoint.url, testPayload, { 
                 headers: header, 
                 timeout: REQUEST_TIMEOUT, 
                 validateStatus: () => true 
@@ -161,7 +161,7 @@ async function testBypassTechniques(endpoint: DiscoveredEndpoint): Promise<RateL
 
     // 2. HTTP Method Switching
     try {
-        const response = await axios.get(endpoint.url, { 
+        const response = await httpClient.get(endpoint.url, { 
             params: testPayload, 
             timeout: REQUEST_TIMEOUT, 
             validateStatus: () => true 
@@ -182,7 +182,7 @@ async function testBypassTechniques(endpoint: DiscoveredEndpoint): Promise<RateL
         try {
             const url = new URL(endpoint.url);
             url.pathname = path;
-            const response = await axios.post(url.toString(), testPayload, { 
+            const response = await httpClient.post(url.toString(), testPayload, { 
                 timeout: REQUEST_TIMEOUT, 
                 validateStatus: () => true 
             });

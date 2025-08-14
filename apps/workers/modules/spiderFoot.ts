@@ -18,7 +18,7 @@
 import { execFile, exec as execRaw } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
@@ -54,7 +54,7 @@ async function probeAndCreateUrlArtifacts(domain: string, baseArtifact: any): Pr
     for (const proto of protocols) {
         const url = `${proto}://${domain}`;
         try {
-            const response = await axios.get(url, { 
+            const response = await httpClient.get(url, { 
                 timeout: 8000,
                 headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.36' }
             });

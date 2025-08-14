@@ -14,7 +14,7 @@
  * =============================================================================
  */
 
-import axios, { AxiosError } from 'axios';
+import { httpClient, AxiosError } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
@@ -109,7 +109,7 @@ async function rlFetch<T>(url: string, attempt = 0): Promise<T> {
   tsQueue.push(Date.now());
 
   try {
-    const res = await axios.get<T>(url, { timeout: 30_000 });
+    const res = await httpClient.get<T>(url, { timeout: 30_000 });
     apiCallsCount++;
     log(`[Shodan] API call ${apiCallsCount} - ${url.includes('search') ? 'search' : 'host'} query`);
     return res.data;

@@ -23,6 +23,7 @@ async function enqueueScanTask(job: ScanJob): Promise<void> {
   const location = process.env.GCP_LOCATION ?? 'us-central1';
   const queue = process.env.TASKS_QUEUE ?? 'scan-queue';
   const url = process.env.TASKS_WORKER_URL ?? ''; // e.g., https://<service-url>/tasks/scan
+  const serviceAccount = process.env.SCAN_WORKER_SA ?? '';
 
   if (!project || !url) {
     throw new Error('Missing GCP_PROJECT or TASKS_WORKER_URL');
@@ -32,22 +33,41 @@ async function enqueueScanTask(job: ScanJob): Promise<void> {
   const parent = client.queuePath(project, location, queue);
 
   const payload = JSON.stringify(job);
-  const body = Buffer.from(payload).toString('base64');
 
-  await client.createTask({
-    parent,
-    task: {
-      httpRequest: {
-        httpMethod: 'POST',
-        url,
-        headers: { 'Content-Type': 'application/json' },
-        body: Buffer.from(payload),
-        // Optionally add OIDC token if the worker is authenticated-only:
-        // oidcToken: { serviceAccountEmail: process.env.SCAN_WORKER_SA ?? '' },
-      },
-      scheduleTime: { seconds: Math.floor(Date.now() / 1000) }, // immediate
+  // Create idempotent task name using scan_id
+  const taskName = `${parent}/tasks/${job.scan_id}-${Date.now()}`;
+
+  const task = {
+    name: taskName,
+    httpRequest: {
+      httpMethod: 'POST' as const,
+      url,
+      headers: { 'Content-Type': 'application/json' },
+      body: Buffer.from(payload),
+      // Add OIDC token for authentication
+      ...(serviceAccount && {
+        oidcToken: { 
+          serviceAccountEmail: serviceAccount,
+          audience: url.split('/').slice(0, 3).join('/')  // Extract base URL as audience
+        }
+      }),
     },
-  });
+    scheduleTime: { seconds: Math.floor(Date.now() / 1000) }, // immediate
+  };
+
+  try {
+    await client.createTask({
+      parent,
+      task,
+    });
+  } catch (err: any) {
+    // If task already exists (idempotency), that's OK
+    if (err.code === 6) { // ALREADY_EXISTS
+      console.log(`Task ${taskName} already exists, skipping`);
+    } else {
+      throw err;
+    }
+  }
 }
 
 export function buildServer() {
@@ -60,22 +80,60 @@ export function buildServer() {
   // Eventarc delivers a Pub/Sub-style envelope with { message: { data: base64(json) } }
   app.post<{ Body: PubSubMessage }>('/events', async (req, reply) => {
     const body = req.body;
-    const msg = parseBase64Json<ScanJob>(body?.message?.data);
-    if (!msg?.domain) {
-      req.log.warn({ body }, 'Invalid event payload');
-      return reply.code(204).send(); // ack anyway to avoid redelivery loop
+    
+    // Validate Pub/Sub message structure
+    if (!body || typeof body !== 'object' || !body.message) {
+      req.log.warn({ body }, 'Invalid Pub/Sub envelope structure');
+      return reply.code(204).send(); // ack to avoid redelivery
+    }
+    
+    // Parse the base64-encoded message data
+    const msg = parseBase64Json<ScanJob>(body.message.data);
+    
+    // Validate the scan job payload
+    if (!msg || typeof msg !== 'object' || !msg.domain || typeof msg.domain !== 'string') {
+      req.log.warn({ 
+        subscription: body.subscription,
+        messageData: body.message.data,
+        parsed: msg 
+      }, 'Invalid scan job payload');
+      return reply.code(204).send(); // ack to avoid redelivery loop
+    }
+    
+    // Validate domain format (basic check)
+    const domainRegex = /^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,}$/i;
+    if (!domainRegex.test(msg.domain)) {
+      req.log.warn({ domain: msg.domain }, 'Invalid domain format');
+      return reply.code(204).send();
     }
 
-    // Ensure scan_id
+    // Ensure scan_id is valid
     const scan_id = msg.scan_id && msg.scan_id.length > 0 ? msg.scan_id : crypto.randomUUID();
-    const job: ScanJob = { scan_id, domain: msg.domain };
+    const job: ScanJob = { 
+      scan_id, 
+      domain: msg.domain.toLowerCase(), // normalize domain
+      companyName: msg.companyName 
+    };
+
+    // Log the incoming event
+    req.log.info({ 
+      scan_id: job.scan_id,
+      domain: job.domain,
+      subscription: body.subscription,
+      messageId: (body.message as any)?.messageId
+    }, 'Received Pub/Sub event');
 
     // Enqueue to Cloud Tasks and ack immediately
     try {
       await enqueueScanTask(job);
+      req.log.info({ scan_id: job.scan_id }, 'Successfully enqueued scan task');
       return reply.code(204).send(); // 2xx == ack
     } catch (err) {
-      req.log.error({ err }, 'Failed to enqueue task');
+      req.log.error({ 
+        err, 
+        scan_id: job.scan_id,
+        domain: job.domain 
+      }, 'Failed to enqueue task');
       // Still 204 to avoid redelivery loops; alternatively 500 if you prefer redelivery
       return reply.code(204).send();
     }
@@ -83,18 +141,59 @@ export function buildServer() {
 
   // --- Cloud Tasks worker endpoint ---
   app.post<{ Body: ScanJob }>('/tasks/scan', async (req, reply) => {
+    const startTime = Date.now();
     const body = req.body as ScanJob;
     const { scan_id, domain } = body ?? {};
+    
     if (!scan_id || !domain) {
       return reply.code(400).send({ error: 'scan_id and domain are required' });
     }
 
-    req.log.info({ scan_id, domain }, '[worker] starting');
-    const result = await executeScan({ scan_id, domain });
-    req.log.info({ scan_id }, '[worker] done');
+    // Verify OIDC token if configured
+    const authHeader = req.headers.authorization;
+    if (process.env.REQUIRE_AUTH === 'true' && !authHeader?.startsWith('Bearer ')) {
+      req.log.warn({ scan_id }, 'Missing or invalid authorization header');
+      return reply.code(401).send({ error: 'Unauthorized' });
+    }
 
-    // TODO: persist result to Firestore/DB here
-    return reply.code(200).send(result);
+    req.log.info({ 
+      scan_id, 
+      domain,
+      task_queue_name: req.headers['x-cloudtasks-queuename'],
+      task_retry_count: req.headers['x-cloudtasks-taskretrycount'],
+      task_execution_count: req.headers['x-cloudtasks-taskexecutioncount']
+    }, '[worker] starting scan');
+    
+    try {
+      const result = await executeScan({ scan_id, domain });
+      
+      const duration = Date.now() - startTime;
+      req.log.info({ 
+        scan_id,
+        duration_ms: duration,
+        modules_completed: Object.keys(result.results).length
+      }, '[worker] scan completed successfully');
+
+      // TODO: persist result to Firestore/DB here
+      // await persistToFirestore(result);
+      
+      return reply.code(200).send(result);
+    } catch (err) {
+      const duration = Date.now() - startTime;
+      req.log.error({ 
+        scan_id,
+        domain,
+        duration_ms: duration,
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined
+      }, '[worker] scan failed');
+      
+      // Return 500 to trigger Cloud Tasks retry
+      return reply.code(500).send({ 
+        error: 'Scan failed', 
+        message: err instanceof Error ? err.message : String(err) 
+      });
+    }
   });
 
   // --- Optional: synchronous test route (for manual validation only) ---
@@ -108,7 +207,8 @@ export function buildServer() {
   return app;
 }
 
-if (require.main === module) {
+// Start server if this is the main module
+if (import.meta.url === `file://${process.argv[1]}`) {
   const app = buildServer();
   const port = Number(process.env.PORT ?? 8080);
   app

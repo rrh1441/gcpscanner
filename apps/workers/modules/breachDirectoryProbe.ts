@@ -5,7 +5,7 @@
  * to identify compromised accounts and breach exposure statistics.
  */
 
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { executeModule, apiCall } from '../util/errorHandler.js';
@@ -112,7 +112,7 @@ async function queryBreachDirectory(domain: string, apiKey: string): Promise<Bre
   const operation = async () => {
     log(`Querying Breach Directory for domain: ${domain}`);
     
-    const response = await axios.get(BREACH_DIRECTORY_API_BASE, {
+    const response = await httpClient.get(BREACH_DIRECTORY_API_BASE, {
       params: {
         method: 'domain',
         key: apiKey,
@@ -151,7 +151,7 @@ async function queryBreachDirectory(domain: string, apiKey: string): Promise<Bre
   });
 
   if (!result.success) {
-    throw new Error(result.error);
+    throw new Error((result as any).error);
   }
 
   return result.data;
@@ -164,7 +164,7 @@ async function queryLeakCheck(domain: string, apiKey: string): Promise<LeakCheck
   const operation = async () => {
     log(`Querying LeakCheck for domain: ${domain}`);
     
-    const response = await axios.get(`${LEAKCHECK_API_BASE}/query/${domain}`, {
+    const response = await httpClient.get(`${LEAKCHECK_API_BASE}/query/${domain}`, {
       headers: {
         'Accept': 'application/json',
         'X-API-Key': apiKey
@@ -198,7 +198,7 @@ async function queryLeakCheck(domain: string, apiKey: string): Promise<LeakCheck
   });
 
   if (!result.success) {
-    throw new Error(result.error);
+    throw new Error((result as any).error);
   }
 
   return result.data;

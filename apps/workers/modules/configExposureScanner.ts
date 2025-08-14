@@ -6,7 +6,7 @@
  * =============================================================================
  */
 
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
@@ -151,7 +151,7 @@ async function probeConfigFile(baseUrl: string, path: string): Promise<ConfigFil
     const normalizedPath = path.replace(/\/+/g, '/');
     const url = `${baseUrl}${normalizedPath}`;
     
-    const response = await axios.get(url, {
+    const response = await httpClient.get(url, {
       timeout: 10000,
       maxContentLength: 5 * 1024 * 1024, // 5MB max
       validateStatus: () => true

@@ -5,7 +5,7 @@
  * against AbuseIPDB v2 API for reputation and abuse intelligence.
  */
 
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as rootLog } from '../core/logger.js';
 import { executeModule, apiCall, errorHandler } from '../util/errorHandler.js';
@@ -109,7 +109,7 @@ async function checkAbuseIPDB(ip: string): Promise<RiskAssessment | null> {
   const result = await apiCall(async () => {
     log(`Checking IP ${ip} with AbuseIPDB`);
     
-    const response = await axios.get(ABUSEIPDB_ENDPOINT, {
+    const response = await httpClient.get(ABUSEIPDB_ENDPOINT, {
       params: {
         ipAddress: ip,
         maxAgeInDays: 90,
@@ -130,7 +130,7 @@ async function checkAbuseIPDB(ip: string): Promise<RiskAssessment | null> {
   });
   
   if (!result.success) {
-    log(`Failed to check IP ${ip}: ${result.error}`);
+    log(`Failed to check IP ${ip}: ${(result as any).error}`);
     return null;
   }
   

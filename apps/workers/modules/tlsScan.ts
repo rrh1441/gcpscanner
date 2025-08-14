@@ -10,7 +10,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
@@ -226,7 +226,7 @@ async function isCloudFlareProtected(hostname: string): Promise<boolean> {
     
     // Check HTTP headers for comprehensive CDN detection
     try {
-      const response = await axios.head(`https://${hostname}`, { 
+      const response = await httpClient.head(`https://${hostname}`, { 
         timeout: 5000,
         headers: { 'User-Agent': 'DealBrief-TLS-Scanner/1.0' }
       });

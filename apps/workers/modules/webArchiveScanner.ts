@@ -7,7 +7,7 @@
  * =============================================================================
  */
 
-import axios from 'axios';
+import { httpClient } from '../net/httpClient.js';
 import * as https from 'node:https';
 import { insertArtifact } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
@@ -63,7 +63,7 @@ async function getWaybackUrls(domain: string, tier: 'tier1' | 'tier2' = 'tier1')
         log(`[webArchiveScanner] ${tier.toUpperCase()} scan: Querying Wayback Machine for ${domain} (${startYear}-${currentYear})`);
         
         // Query Wayback Machine CDX API
-        const response = await axios.get(WAYBACK_API_URL, {
+        const response = await httpClient.get(WAYBACK_API_URL, {
             params: {
                 url: `*.${domain}/*`,
                 output: 'json',
@@ -228,7 +228,7 @@ async function fetchArchivedContent(archiveUrls: ArchiveUrl[]): Promise<ArchiveR
                 try {
                     log(`[webArchiveScanner] Fetching archived content: ${archiveUrl.originalUrl}`);
                     
-                    const response = await axios.get(archiveUrl.url, {
+                    const response = await httpClient.get(archiveUrl.url, {
                         timeout: ARCHIVE_TIMEOUT,
                         maxContentLength: 5 * 1024 * 1024, // 5MB max
                         httpsAgent,
