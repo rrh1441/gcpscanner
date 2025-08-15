@@ -638,8 +638,27 @@ const crawlPage = async (
     }
   });
 
-  for (const link of pageLinks) {
-    await crawlPage(link, depth + 1, baseUrl, seen);
+  // Process links in parallel batches to avoid sequential blocking
+  const linkArray = Array.from(pageLinks);
+  const BATCH_SIZE = 5;
+  const MAX_PAGES_PER_CRAWL = 50;
+  
+  // Stop if we've already crawled too many pages
+  if (seen.size >= MAX_PAGES_PER_CRAWL) {
+    log(`[endpointDiscovery] Reached max pages limit (${MAX_PAGES_PER_CRAWL}), stopping crawl`);
+    return;
+  }
+  
+  // Process links in batches
+  for (let i = 0; i < linkArray.length && seen.size < MAX_PAGES_PER_CRAWL; i += BATCH_SIZE) {
+    const batch = linkArray.slice(i, Math.min(i + BATCH_SIZE, linkArray.length));
+    await Promise.all(
+      batch.map(link => 
+        crawlPage(link, depth + 1, baseUrl, seen).catch(err => {
+          log(`[endpointDiscovery] Error crawling ${link}: ${err.message}`);
+        })
+      )
+    );
   }
 };
 

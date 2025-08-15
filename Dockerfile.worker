@@ -51,6 +51,9 @@ RUN curl -sSL https://github.com/trufflesecurity/trufflehog/releases/download/v$
 RUN pip3 install --no-cache-dir --break-system-packages \
     dnstwist python-whois webtech
 
+# Install sslscan for TLS vulnerability scanning
+RUN apk add --no-cache sslscan
+
 # Set up Chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser \

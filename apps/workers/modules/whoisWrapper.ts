@@ -52,7 +52,8 @@ export async function resolveWhoisBatch(domains: string[]): Promise<{ records: W
     await writeFile(tempFile, JSON.stringify(domains));
     
     // Call Python resolver with domains as arguments
-    const pythonScript = join(process.cwd(), 'apps/workers/modules/whoisResolver.py');
+    // Use __dirname to get the correct path relative to this module
+    const pythonScript = join(new URL('.', import.meta.url).pathname, 'whoisResolver.py');
     const { stdout, stderr } = await exec('python3', [pythonScript, ...domains], { 
         timeout: 60_000,
         env: { 
@@ -131,4 +132,48 @@ export async function resolveWhoisBatch(domains: string[]): Promise<{ records: W
 export async function resolveWhoisSingle(domain: string): Promise<WhoisRecord | null> {
   const result = await resolveWhoisBatch([domain]);
   return result.records[0] || null;
+}
+
+/**
+ * Run function for worker integration
+ */
+export async function runWhoisWrapper(job: { domain: string; scanId?: string }): Promise<number> {
+  const { domain, scanId } = job;
+  log(`[whoisWrapper] Starting WHOIS lookup for ${domain}`);
+  
+  try {
+    const result = await resolveWhoisBatch([domain]);
+    
+    if (result.records.length > 0) {
+      const record = result.records[0];
+      
+      // Store WHOIS data as artifact
+      if (scanId) {
+        const { insertArtifact } = await import('../core/artifactStore.js');
+        await insertArtifact({
+          type: 'whois_record',
+          val_text: JSON.stringify(record),
+          severity: 'INFO',
+          meta: {
+            scan_id: scanId,
+            domain: record.domain,
+            registrant_name: record.registrant_name,
+            registrant_org: record.registrant_org,
+            registrar: record.registrar,
+            creation_date: record.creation_date,
+            source: record.source,
+            cost_saved: result.stats.saved_vs_whoisxml
+          }
+        });
+      }
+      
+      log(`[whoisWrapper] WHOIS lookup completed. Source: ${record.source}, Cost saved: $${result.stats.saved_vs_whoisxml.toFixed(3)}`);
+      return 1; // One finding
+    }
+    
+    return 0;
+  } catch (error) {
+    log(`[whoisWrapper] Error: ${(error as Error).message}`);
+    return 0;
+  }
 }

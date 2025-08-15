@@ -5,7 +5,8 @@ import { runShodanScan } from './modules/shodan.js';
 import { runDocumentExposure } from './modules/documentExposure.js';
 import { runClientSecretScanner } from './modules/clientSecretScanner.js';
 import { runTlsScan } from './modules/tlsScan.js';
-import { runNucleiLegacy as runNuclei } from './modules/nuclei.js';
+// import { runNucleiLegacy as runNuclei } from './modules/nuclei.js'; // Moved to Tier 2
+import { executeModule as runLightweightCveCheck } from './modules/lightweightCveCheck.js';
 import { runSpfDmarc } from './modules/spfDmarc.js';
 import { runEndpointDiscovery } from './modules/endpointDiscovery.js';
 import { runTechStackScan } from './modules/techStackScan.js';
@@ -15,6 +16,9 @@ import { runBreachDirectoryProbe } from './modules/breachDirectoryProbe.js';
 import { runAssetCorrelator } from './modules/assetCorrelator.js';
 import { runConfigExposureScanner } from './modules/configExposureScanner.js';
 import { runBackendExposureScanner } from './modules/backendExposureScanner.js';
+import { runDenialWalletScan } from './modules/denialWalletScan.js';
+import { runAiPathFinder } from './modules/aiPathFinder.js';
+import { runWhoisWrapper } from './modules/whoisWrapper.js';
 
 // Module timeout wrapper
 async function runModuleWithTimeout<T>(
@@ -91,15 +95,18 @@ const TIER_1_MODULES = [
   'document_exposure',
   'shodan',
   'breach_directory_probe',
+  'whois_wrapper',  // Added: domain registration data
+  'ai_path_finder',  // Added: AI-powered discovery (run early to inform others)
   'endpoint_discovery',
   'tech_stack_scan',
   'abuse_intel_scan',
   'accessibility_scan',
-  'nuclei',
+  'lightweight_cve_check',  // Replaced nuclei with fast CVE checker
   'tls_scan',
   'spf_dmarc',
   'client_secret_scanner',
-  'backend_exposure_scanner'
+  'backend_exposure_scanner',
+  'denial_wallet_scan'  // Added: cloud cost exploitation
 ];
 
 export async function processScan(job: ScanJob) {
@@ -140,6 +147,18 @@ export async function processScan(job: ScanJob) {
         () => runDocumentExposure({ companyName, domain, scanId }), 
         3 * 60 * 1000, scanId);
     }
+    if (activeModules.includes('whois_wrapper')) {
+      log(`[whois_wrapper] STARTING - scan_id=${scanId}`);
+      parallelModules.whois_wrapper = runModuleWithTimeout('whois_wrapper', 
+        () => runWhoisWrapper({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
+    }
+    if (activeModules.includes('ai_path_finder')) {
+      log(`[ai_path_finder] STARTING - scan_id=${scanId}`);
+      parallelModules.ai_path_finder = runModuleWithTimeout('ai_path_finder', 
+        () => runAiPathFinder({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
+    }
     if (activeModules.includes('endpoint_discovery')) {
       log(`[endpoint_discovery] STARTING - scan_id=${scanId}`);
       parallelModules.endpoint_discovery = runModuleWithTimeout('endpoint_discovery', 
@@ -175,11 +194,15 @@ export async function processScan(job: ScanJob) {
     }
     
     // Then run dependent modules
-    if (activeModules.includes('nuclei')) {
-      log(`[nuclei] STARTING - scan_id=${scanId}`);
-      parallelModules.nuclei = runModuleWithTimeout('nuclei', 
-        () => runNuclei({ domain, scanId }), 
-        3 * 60 * 1000, scanId);
+    if (activeModules.includes('lightweight_cve_check')) {
+      log(`[lightweight_cve_check] STARTING - scan_id=${scanId}`);
+      parallelModules.lightweight_cve_check = runModuleWithTimeout('lightweight_cve_check', 
+        async () => {
+          const result = await runLightweightCveCheck({ scanId, domain, artifacts: [] });
+          // Return the count of findings for compatibility
+          return result.findings ? result.findings.length : 0;
+        }, 
+        30 * 1000, scanId);  // 30 second timeout for fast CVE check
     }
     if (activeModules.includes('tech_stack_scan')) {
       log(`[tech_stack_scan] STARTING - scan_id=${scanId}`);
@@ -209,6 +232,12 @@ export async function processScan(job: ScanJob) {
       log(`[accessibility_scan] STARTING - scan_id=${scanId}`);
       parallelModules.accessibility_scan = runModuleWithTimeout('accessibility_scan', 
         () => runAccessibilityScan({ domain, scanId }), 
+        3 * 60 * 1000, scanId);
+    }
+    if (activeModules.includes('denial_wallet_scan')) {
+      log(`[denial_wallet_scan] STARTING - scan_id=${scanId}`);
+      parallelModules.denial_wallet_scan = runModuleWithTimeout('denial_wallet_scan', 
+        () => runDenialWalletScan({ domain, scanId }), 
         3 * 60 * 1000, scanId);
     }
     
