@@ -157,6 +157,7 @@ export async function runTechStackScan(job: {
 }): Promise<number> {
   const { domain, scanId, targets: providedTargets } = job;
   const start = Date.now();
+  console.log(`[techStackScan] START ${domain} at ${new Date().toISOString()}`);
   log(`techstack=start domain=${domain}`);
 
   try {
@@ -164,6 +165,7 @@ export async function runTechStackScan(job: {
     const targetResult = await discoverTargets(scanId, domain, providedTargets);
     const allTargets = targetResult.primary;
     
+    console.log(`[techStackScan] Target discovery complete: ${targetResult.total} targets found`);
     log(`techstack=targets total=${targetResult.total} html=${allTargets.length}`);
     
     // 2. TECHNOLOGY DETECTION
@@ -172,23 +174,31 @@ export async function runTechStackScan(job: {
     
     for (const url of allTargets.slice(0, 5)) {
       try {
+        console.log(`[techStackScan] Starting WebTech detection for ${url}...`);
         const webtech = await detectTechnologiesWithWebTech(url);
         allDetections.push(...webtech.technologies);
+        console.log(`[techStackScan] WebTech complete: ${webtech.technologies.length} technologies found`);
         
         if (webtech.technologies.length === 0) {
+          console.log(`[techStackScan] Starting WhatWeb detection for ${url}...`);
           const whatweb = await detectTechnologiesWithWhatWeb(url);
           allDetections.push(...whatweb.technologies);
+          console.log(`[techStackScan] WhatWeb complete: ${whatweb.technologies.length} technologies found`);
         }
         
         if (allDetections.length === 0) {
+          console.log(`[techStackScan] Starting header detection for ${url}...`);
           const headers = await detectFromHeaders(url);
           allDetections.push(...headers);
+          console.log(`[techStackScan] Header detection complete: ${headers.length} technologies found`);
         }
 
+        console.log(`[techStackScan] Starting favicon detection for ${url}...`);
         const favicon = await detectTechnologyByFavicon(url);
         if (favicon.length > 0) {
           allDetections.push(...favicon);
         }
+        console.log(`[techStackScan] Favicon detection complete: ${favicon.length} technologies found`);
       } catch (err) {
         log(`Error detecting tech for ${url}:`, (err as Error).message);
       }
@@ -201,13 +211,16 @@ export async function runTechStackScan(job: {
       }
     }
     
+    console.log(`[techStackScan] Technology detection phase complete: ${techMap.size} unique technologies identified`);
     log(`techstack=tech_detection_complete techs=${techMap.size}`);
     
     // 3. SECURITY ANALYSIS
+    console.log(`[techStackScan] Starting vulnerability enrichment for ${techMap.size} technologies...`);
     const analysisMap = new Map<string, EnhancedSecAnalysis>();
     for (const [slug, tech] of techMap) {
       analysisMap.set(slug, await analyzeSecurityEnhanced(tech));
     }
+    console.log(`[techStackScan] Vulnerability enrichment complete`);
     
     // 4. ARTIFACT GENERATION
     let artCount = 0;
@@ -316,10 +329,13 @@ export async function runTechStackScan(job: {
       }
     });
     
+    console.log(`[techStackScan] COMPLETE in ${runMs}ms with ${techMap.size} technologies`);
     log(`techstack=complete domain=${domain} artifacts=${artCount} runtime=${runMs}ms`);
     return artCount;
 
   } catch (error) {
+    console.log(`[techStackScan] ERROR: ${(error as Error).message}`);
+    console.log(`[techStackScan] Stack trace:`, (error as Error).stack);
     log(`techstack=error domain=${domain} error="${(error as Error).message}"`);
     await insertArtifact({
       type: 'scan_error',

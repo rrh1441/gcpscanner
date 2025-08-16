@@ -544,45 +544,25 @@ export async function runBreachDirectoryProbe(job: { domain: string; scanId: str
     
     log(`Starting comprehensive breach probe for domain="${domain}" (BreachDirectory + LeakCheck)`);
     
-    // Check for API keys
-    const breachDirectoryApiKey = process.env.BREACH_DIRECTORY_API_KEY;
+    // Check for API key
     const leakCheckApiKey = process.env.LEAKCHECK_API_KEY;
     
-    if (!breachDirectoryApiKey && !leakCheckApiKey) {
-      log('No breach API keys found - need BREACH_DIRECTORY_API_KEY or LEAKCHECK_API_KEY environment variable');
+    if (!leakCheckApiKey) {
+      log('LeakCheck API key not found - need LEAKCHECK_API_KEY environment variable');
       return 0;
     }
     
+    // Initialize with empty breach data (we're not using BreachDirectory anymore)
     let breachData: BreachDirectoryResponse = { breached_total: 0, sample_usernames: [] };
     let leakCheckData: LeakCheckResponse = { success: false, found: 0, quota: 0, result: [] };
     
-    // Query BreachDirectory if API key available
-    if (breachDirectoryApiKey) {
-      try {
-        breachData = await queryBreachDirectory(domain, breachDirectoryApiKey);
-      } catch (error) {
-        log(`BreachDirectory query failed: ${(error as Error).message}`);
-        breachData = { breached_total: 0, sample_usernames: [], error: (error as Error).message };
-      }
-    } else {
-      log('BreachDirectory API key not found, skipping BreachDirectory query');
-    }
-    
-    // Query LeakCheck if API key available  
-    if (leakCheckApiKey) {
-      try {
-        // Add rate limiting delay if we queried BreachDirectory first
-        if (breachDirectoryApiKey) {
-          await new Promise(resolve => setTimeout(resolve, LEAKCHECK_RATE_LIMIT_MS));
-        }
-        
-        leakCheckData = await queryLeakCheck(domain, leakCheckApiKey);
-      } catch (error) {
-        log(`LeakCheck query failed: ${(error as Error).message}`);
-        leakCheckData = { success: false, found: 0, quota: 0, result: [], error: (error as Error).message };
-      }
-    } else {
-      log('LeakCheck API key not found, skipping LeakCheck query');
+    // Query LeakCheck
+    try {
+      leakCheckData = await queryLeakCheck(domain, leakCheckApiKey);
+      log(`LeakCheck query successful: found ${leakCheckData.found} breaches`);
+    } catch (error) {
+      log(`LeakCheck query failed: ${(error as Error).message}`);
+      leakCheckData = { success: false, found: 0, quota: 0, result: [], error: (error as Error).message };
     }
     
     // Analyze combined results

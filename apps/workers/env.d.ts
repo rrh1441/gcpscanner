@@ -10,7 +10,6 @@ declare global {
       
       // API Keys
       ABUSEIPDB_API_KEY?: string;
-      BREACH_DIRECTORY_API_KEY?: string;
       CENSYS_API_ID?: string;
       CENSYS_API_KEY?: string;
       CENSYS_API_SECRET?: string;

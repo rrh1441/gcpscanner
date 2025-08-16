@@ -555,12 +555,25 @@ const crawlPage = async (
   if (depth > MAX_CRAWL_DEPTH || seen.has(url)) return;
   seen.add(url);
 
+  // Add detailed logging for debugging
+  console.log(`[endpointDiscovery:crawlPage] Starting request to ${url} at depth ${depth}`)
+  log(`[endpointDiscovery:crawlPage] Starting request to ${url} at depth ${depth}`);
+  
+  const requestStart = Date.now();
   const res = await safeRequest(url, {
     timeout: REQUEST_TIMEOUT,
     headers: { 'User-Agent': getRandomUA() },
     validateStatus: () => true
   });
-  if (!res.ok || typeof res.data !== 'string') return;
+  
+  const requestTime = Date.now() - requestStart;
+  console.log(`[endpointDiscovery:crawlPage] Request to ${url} completed in ${requestTime}ms`);
+  log(`[endpointDiscovery:crawlPage] Request to ${url} completed in ${requestTime}ms`);
+  
+  if (!res.ok || typeof res.data !== 'string') {
+    log(`[endpointDiscovery:crawlPage] Request failed or invalid response for ${url}`);
+    return;
+  }
 
   // Save HTML content as web asset for secret scanning
   const contentType = typeof res.data === 'object' && res.data && 'headers' in res.data ? 
@@ -649,13 +662,17 @@ const crawlPage = async (
     return;
   }
   
-  // Process links in batches
+  // Process links in batches with better error handling
+  console.log(`[endpointDiscovery:crawlPage] Processing ${linkArray.length} links in batches`);
   for (let i = 0; i < linkArray.length && seen.size < MAX_PAGES_PER_CRAWL; i += BATCH_SIZE) {
     const batch = linkArray.slice(i, Math.min(i + BATCH_SIZE, linkArray.length));
+    console.log(`[endpointDiscovery:crawlPage] Processing batch ${Math.floor(i/BATCH_SIZE) + 1} with ${batch.length} links`);
+    
     await Promise.all(
       batch.map(link => 
         crawlPage(link, depth + 1, baseUrl, seen).catch(err => {
-          log(`[endpointDiscovery] Error crawling ${link}: ${err.message}`);
+          console.error(`[endpointDiscovery:crawlPage] Error crawling ${link}: ${err.message}`);
+          log(`[endpointDiscovery:crawlPage] Error crawling ${link}: ${err.message}`);
         })
       )
     );
@@ -826,8 +843,11 @@ const probeHighValuePaths = async (baseUrl: string): Promise<void> => {
 // ---------- Main Export ------------------------------------------------------
 
 export async function runEndpointDiscovery(job: { domain: string; scanId?: string }): Promise<number> {
+  console.log(`[endpointDiscovery] ⇢ START ${job.domain} at ${new Date().toISOString()}`);
+  const start = Date.now();
   log(`[endpointDiscovery] ⇢ start ${job.domain}`);
   const baseUrl = `https://${job.domain}`;
+  console.log(`[endpointDiscovery] baseUrl: ${baseUrl}`);
   log(`[endpointDiscovery] baseUrl: ${baseUrl}`);
   
   // Initialize anti-infinite operation protection
@@ -842,45 +862,55 @@ export async function runEndpointDiscovery(job: { domain: string; scanId?: strin
   log(`[endpointDiscovery] Cleared all collections`);
 
   // Existing discovery methods with timeout protection
+  console.log(`[endpointDiscovery] Starting parseRobotsTxt at ${new Date().toISOString()}...`);
   log(`[endpointDiscovery] Starting parseRobotsTxt...`);
   try {
     await Promise.race([
       parseRobotsTxt(baseUrl),
       new Promise((_, reject) => setTimeout(() => reject(new Error('parseRobotsTxt timeout')), 30000))
     ]);
+    console.log(`[endpointDiscovery] parseRobotsTxt completed successfully at ${new Date().toISOString()}`);
     log(`[endpointDiscovery] parseRobotsTxt completed successfully`);
   } catch (e) {
     log(`[endpointDiscovery] parseRobotsTxt failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  console.log(`[endpointDiscovery] Starting parseSitemap at ${new Date().toISOString()}...`);
   log(`[endpointDiscovery] Starting parseSitemap...`);
   try {
     await Promise.race([
       parseSitemap(`${baseUrl}/sitemap.xml`, baseUrl),
       new Promise((_, reject) => setTimeout(() => reject(new Error('parseSitemap timeout')), 30000))
     ]);
+    console.log(`[endpointDiscovery] parseSitemap completed successfully at ${new Date().toISOString()}`);
     log(`[endpointDiscovery] parseSitemap completed successfully`);
   } catch (e) {
     log(`[endpointDiscovery] parseSitemap failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  console.log(`[endpointDiscovery] Starting crawlPage at ${new Date().toISOString()}...`);
   log(`[endpointDiscovery] Starting crawlPage...`);
   try {
     await Promise.race([
       crawlPage(baseUrl, 1, baseUrl, new Set<string>()),
       new Promise((_, reject) => setTimeout(() => reject(new Error('crawlPage timeout')), 60000))
     ]);
+    console.log(`[endpointDiscovery] crawlPage completed successfully at ${new Date().toISOString()}`);
     log(`[endpointDiscovery] crawlPage completed successfully`);
   } catch (e) {
     log(`[endpointDiscovery] crawlPage failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
   }
+  
+  console.log(`[endpointDiscovery] crawlPage returned, discovered ${discovered.size} endpoints so far`);
 
+  console.log(`[endpointDiscovery] Starting bruteForce enumeration...`);
   log(`[endpointDiscovery] Starting bruteForce...`);
   try {
     await Promise.race([
       bruteForce(baseUrl),
       new Promise((_, reject) => setTimeout(() => reject(new Error('bruteForce timeout')), 30000))
     ]);
+    console.log(`[endpointDiscovery] bruteForce complete, total endpoints: ${discovered.size}`);
     log(`[endpointDiscovery] bruteForce completed successfully`);
   } catch (e) {
     log(`[endpointDiscovery] bruteForce failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
@@ -901,9 +931,11 @@ export async function runEndpointDiscovery(job: { domain: string; scanId?: strin
   log(`[endpointDiscovery] Collected ${endpoints.length} endpoints, ${assets.length} assets, ${backendArr.length} backends`);
 
   /* ------- Visibility enrichment (public/static vs. auth) ---------------- */
+  console.log(`[endpointDiscovery] Starting visibility check for ${discovered.size} endpoints...`);
   log(`[endpointDiscovery] Starting enrichVisibility...`);
   try {
     await enrichVisibility(endpoints);
+    console.log(`[endpointDiscovery] Visibility check complete`);
     log(`[endpointDiscovery] enrichVisibility completed successfully`);
   } catch (e) {
     log(`[endpointDiscovery] enrichVisibility failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -959,6 +991,7 @@ export async function runEndpointDiscovery(job: { domain: string; scanId?: strin
     });
   }
 
+  console.log(`[endpointDiscovery] COMPLETE: Returning ${discovered.size} endpoints in ${Date.now() - start}ms`);
   log(`[endpointDiscovery] ⇢ done – ${endpoints.length} endpoints, ${assets.length} web assets, ${backendArr.length} backend IDs`);
   // Return 0 as this module doesn't create findings, only artifacts
   return 0;

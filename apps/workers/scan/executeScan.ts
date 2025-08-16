@@ -9,7 +9,7 @@ import { runWhoisWrapper } from '../modules/whoisWrapper.js';
 import { runAiPathFinder } from '../modules/aiPathFinder.js';
 import { runTechStackScan } from '../modules/techStackScan.js';
 import { runAbuseIntelScan } from '../modules/abuseIntelScan.js';
-import { runAccessibilityScan } from '../modules/accessibilityScan.js';
+// import { runAccessibilityScan } from '../modules/accessibilityScan.js'; // Moved to Tier 2 - too slow
 // import { runNucleiLegacy as runNuclei } from '../modules/nuclei.js'; // Moved to Tier 2
 import { executeModule as runLightweightCveCheck } from '../modules/lightweightCveCheck.js';
 import { runClientSecretScanner } from '../modules/clientSecretScanner.js';
@@ -58,7 +58,7 @@ export async function executeScan(job: ScanJob): Promise<ScanResult> {
     }
   };
 
-  // Run all 17 Tier 1 scans in parallel with proper error handling and timeouts
+  // Run all 16 Tier 1 scans in parallel (accessibility moved to Tier 2)
   const scanPromises = [
     timeModule('breach_directory_probe', runBreachDirectoryProbe({ domain, scanId: scan_id })),
     
@@ -76,7 +76,7 @@ export async function executeScan(job: ScanJob): Promise<ScanResult> {
     
     timeModule('abuse_intel_scan', runAbuseIntelScan({ scanId: scan_id })),
     
-    timeModule('accessibility_scan', runAccessibilityScan({ domain, scanId: scan_id })),
+    // accessibility_scan moved to Tier 2 - too slow
     
     timeModule('lightweight_cve_check', (async () => {
       const result = await runLightweightCveCheck({ scanId: scan_id, domain, artifacts: [] });

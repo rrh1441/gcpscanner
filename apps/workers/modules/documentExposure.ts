@@ -473,6 +473,8 @@ export async function runDocumentExposure(job: {
   domain: string;
   scanId?: string;
 }): Promise<number> {
+  console.log(`[documentExposure] START at ${new Date().toISOString()}`);
+  const start = Date.now();
   const { companyName, domain, scanId } = job;
   if (!process.env.SERPER_KEY) {
     log('[documentExposure] SERPER_KEY missing');
@@ -502,9 +504,11 @@ export async function runDocumentExposure(job: {
     }
   }
 
+  console.log(`[documentExposure] Calling Serper API for ${domain}...`);
   log(`[documentExposure] Starting ${allQueries.length} parallel Serper queries`);
   
   // Execute all queries in parallel
+  const serperStart = Date.now();
   const queryResults = await Promise.allSettled(
     allQueries.map(async ({query, category}, index) => {
       try {
@@ -519,6 +523,7 @@ export async function runDocumentExposure(job: {
         });
         const data = JSON.parse(new TextDecoder('utf-8').decode(response.body));
         const results = data.organic ?? [];
+        console.log(`[documentExposure] Serper query ${index + 1} returned ${results.length} results`);
         log(`[documentExposure] Query ${index + 1} returned ${results.length} results`);
         return { category, query, results, success: true };
       } catch (error) {
@@ -527,6 +532,8 @@ export async function runDocumentExposure(job: {
       }
     })
   );
+  
+  console.log(`[documentExposure] Serper returned ${queryResults.filter(r => r.status === 'fulfilled').length} successful results in ${Date.now() - serperStart}ms`);
 
   // Process all results
   for (const result of queryResults) {
@@ -541,6 +548,7 @@ export async function runDocumentExposure(job: {
       if (!isSearchHitRelevant(urlStr, hit.title ?? '', hit.snippet ?? '', sig)) continue;
 
       const platform = getPlatform(urlStr);
+      console.log(`[documentExposure] Found document: ${urlStr} (${platform})`);
       const res = await downloadAndAnalyze(urlStr, sig, industryLabel, scanId);
       if (!res) continue;
 
@@ -578,6 +586,7 @@ export async function runDocumentExposure(job: {
   }
 
   const estimatedCost = (allQueries.length * 0.003).toFixed(3); // Rough estimate at $0.003/search
+  console.log(`[documentExposure] COMPLETE: Found ${total} exposed documents in ${Date.now() - start}ms`);
   log(`[documentExposure] Completed: ${total} files found, ${allQueries.length} parallel Serper calls (~$${estimatedCost})`);
 
   await insertArtifact({

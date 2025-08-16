@@ -76,6 +76,36 @@ export function buildServer() {
   // Health — NO external calls
   app.get('/', async () => ({ status: 'ok', ts: Date.now() }));
 
+  // Debug endpoint to test IPv6 hypothesis
+  app.get('/debug/network-test', async (request, reply) => {
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+    
+    const domain = (request.query as any)?.domain || 'openai.com';
+    
+    const curlTest = async (ipVersion: string) => {
+      try {
+        const { stdout, stderr } = await execAsync(
+          `curl -${ipVersion} --connect-timeout 5 -s -o /dev/null -w '%{http_code} | %{time_total}s | %{remote_ip}' https://${domain}`,
+          { timeout: 6000 }
+        );
+        return { success: true, result: stdout, stderr };
+      } catch (error: any) {
+        return { success: false, error: error.message, stderr: error.stderr };
+      }
+    };
+
+    const [ipv4, ipv6] = await Promise.all([curlTest('4'), curlTest('6')]);
+    
+    return { 
+      domain,
+      ipv4_result: ipv4, 
+      ipv6_result: ipv6,
+      timestamp: new Date().toISOString()
+    };
+  });
+
   // --- Eventarc/PubSub push endpoint: FAST-ACK ---
   // Eventarc delivers a Pub/Sub-style envelope with { message: { data: base64(json) } }
   app.post<{ Body: PubSubMessage }>('/events', async (req, reply) => {

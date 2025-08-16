@@ -141,6 +141,7 @@ interface ConfigFile {
 }
 
 async function probeConfigFile(baseUrl: string, path: string): Promise<ConfigFile | null> {
+  const probeStart = Date.now();
   try {
     // Validate path to prevent traversal attacks
     if (!path.startsWith('/') || path.includes('../') || path.includes('..\\') || path.includes('%2e%2e')) {
@@ -202,6 +203,7 @@ async function probeConfigFile(baseUrl: string, path: string): Promise<ConfigFil
         }
       }
 
+      console.log(`[configExposureScanner] Found exposed file at ${path} (${content.length} bytes, ${secrets.length} secrets) in ${Date.now() - probeStart}ms`);
       return {
         path,
         status: response.status,
@@ -211,7 +213,10 @@ async function probeConfigFile(baseUrl: string, path: string): Promise<ConfigFil
       };
     }
   } catch (error) {
-    // Expected for most paths - don't log
+    // Most paths will 404 - only log actual errors
+    if (error && (error as any).code !== 'ENOTFOUND' && (error as any).response?.status !== 404) {
+      console.log(`[configExposureScanner] Error checking ${path}: ${(error as Error).message}`);
+    }
   }
   
   return null;
@@ -221,18 +226,23 @@ export async function runConfigExposureScanner(job: {
   domain: string;
   scanId?: string;
 }): Promise<number> {
+  console.log(`[configExposureScanner] START at ${new Date().toISOString()}`);
+  const start = Date.now();
   const { domain, scanId } = job;
   const baseUrl = `https://${domain}`;
   
   log(`[configExposureScanner] Starting scan for ${domain}`);
+  console.log(`[configExposureScanner] Checking ${CONFIG_PATHS.length} config paths...`);
   
   const exposedFiles: ConfigFile[] = [];
   let totalSecrets = 0;
   
   // Probe all config paths
   for (const path of CONFIG_PATHS) {
+    console.log(`[configExposureScanner] Checking path: ${path}`);
     const result = await probeConfigFile(baseUrl, path);
     if (result) {
+      console.log(`[configExposureScanner] Path ${path} returned status ${result.status}`);
       exposedFiles.push(result);
       totalSecrets += result.secrets.length;
       log(`[configExposureScanner] Found exposed file: ${path} (${result.secrets.length} secrets)`);
@@ -295,6 +305,7 @@ export async function runConfigExposureScanner(job: {
     }
   });
   
+  console.log(`[configExposureScanner] COMPLETE: Found ${exposedFiles.length} exposures in ${Date.now() - start}ms`);
   log(`[configExposureScanner] Completed: ${exposedFiles.length} exposed files, ${totalSecrets} secrets`);
   return totalSecrets;
 }

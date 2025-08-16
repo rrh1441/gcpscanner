@@ -44,7 +44,10 @@ async function resolveSpfRecord(domain: string, lookups: number = 0, redirectCha
   }
 
   try {
-    const { stdout } = await exec('dig', ['TXT', domain, '+short'], { timeout: 10000 });
+    const { stdout } = await exec('dig', ['TXT', domain, '+short'], { 
+      timeout: 10000,
+      maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+    });
     const records = stdout.trim().split('\n').map(s => s.replace(/"/g, '')).filter(r => r.startsWith('v=spf1'));
 
     if (records.length === 0) return { record: '', lookups, error: 'NONE_FOUND', allMechanism: 'none' };
@@ -87,13 +90,16 @@ async function resolveSpfRecord(domain: string, lookups: number = 0, redirectCha
 }
 
 export async function runSpfDmarc(job: { domain: string; scanId?: string }): Promise<number> {
+  console.log(`[spfDmarc] START at ${new Date().toISOString()}`);
   log('[spfDmarc] Starting email security scan for', job.domain);
   let findingsCount = 0;
 
   // --- 1. DMARC Check (Existing logic is good) ---
   log('[spfDmarc] Checking DMARC record...');
   try {
-    const { stdout: dmarcOut } = await exec('dig', ['txt', `_dmarc.${job.domain}`, '+short']);
+    const { stdout: dmarcOut } = await exec('dig', ['txt', `_dmarc.${job.domain}`, '+short'], {
+      maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+    });
     if (!dmarcOut.trim()) {
         const artifactId = await insertArtifact({ type: 'dmarc_missing', val_text: `DMARC record missing`, severity: 'MEDIUM', meta: { scan_id: job.scanId, scan_module: 'spfDmarc' } });
         await insertFinding(artifactId, 'EMAIL_SECURITY_GAP', 'Implement a DMARC policy (start with p=none) to gain visibility into email channels and begin protecting against spoofing.', 'No DMARC record found.');
@@ -141,7 +147,9 @@ export async function runSpfDmarc(job: { domain: string; scanId?: string }): Pro
   
   for (const selector of commonSelectors) {
     try {
-      const { stdout: dkimOut } = await exec('dig', ['txt', `${selector}._domainkey.${job.domain}`, '+short']);
+      const { stdout: dkimOut } = await exec('dig', ['txt', `${selector}._domainkey.${job.domain}`, '+short'], {
+        maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+      });
       if (dkimOut.trim().includes('k=rsa')) {
         dkimFound = true;
         log(`[spfDmarc] Found DKIM record with selector: ${selector}`);
@@ -159,7 +167,9 @@ export async function runSpfDmarc(job: { domain: string; scanId?: string }): Pro
   // REFACTOR: --- 4. BIMI Check (Optional Enhancement) ---
   log('[spfDmarc] Checking for BIMI record...');
   try {
-      const { stdout: bimiOut } = await exec('dig', ['txt', `default._bimi.${job.domain}`, '+short']);
+      const { stdout: bimiOut } = await exec('dig', ['txt', `default._bimi.${job.domain}`, '+short'], {
+        maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+      });
       if (bimiOut.trim().startsWith('v=BIMI1')) {
           log(`[spfDmarc] Found BIMI record: ${bimiOut.trim()}`);
           await insertArtifact({

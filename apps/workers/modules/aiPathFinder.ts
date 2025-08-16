@@ -115,6 +115,8 @@ async function generateIntelligentPaths(domain: string, techStack: TechStack): P
         return generateFallbackPaths(techStack);
     }
 
+    console.log(`[aiPathFinder] Preparing OpenAI request for ${domain}...`);
+    const apiStart = Date.now();
     try {
         const openai = new OpenAI({ timeout: 30000 });
         
@@ -176,6 +178,8 @@ IMPORTANT: Return ONLY the JSON array, no additional text or explanation.`;
             temperature: 0.7,
             max_tokens: 2000
         });
+        
+        console.log(`[aiPathFinder] OpenAI response received in ${Date.now() - apiStart}ms`);
 
         const content = response.choices[0]?.message?.content?.trim();
         if (!content) {
@@ -198,6 +202,11 @@ IMPORTANT: Return ONLY the JSON array, no additional text or explanation.`;
             path.category &&
             path.path.startsWith('/')
         );
+
+        // Log each AI-suggested path
+        validPaths.forEach(path => {
+            console.log(`[aiPathFinder] AI suggested path: ${path.path} (${path.confidence} confidence)`);
+        });
 
         log(`[aiPathFinder] Generated ${validPaths.length} AI-powered paths`);
         return validPaths.slice(0, MAX_PATHS_TO_GENERATE);
@@ -326,6 +335,8 @@ async function probeGeneratedPaths(baseUrl: string, paths: GeneratedPath[]): Pro
  * Main AI Path Finder function
  */
 export async function runAiPathFinder(job: { domain: string; scanId?: string }): Promise<number> {
+  console.log(`[aiPathFinder] START at ${new Date().toISOString()}`);
+    const start = Date.now();
     log(`[aiPathFinder] Starting AI-powered path discovery for ${job.domain}`);
     
     if (!job.scanId) {
@@ -384,10 +395,13 @@ export async function runAiPathFinder(job: { domain: string; scanId?: string }):
             }
         }
         
+        console.log(`[aiPathFinder] COMPLETE: Found ${accessiblePaths.length} AI-suggested paths in ${Date.now() - start}ms`);
         log(`[aiPathFinder] Completed AI path discovery: ${accessiblePaths.length}/${generatedPaths.length} paths accessible`);
         return accessiblePaths.length;
         
     } catch (error) {
+        console.log(`[aiPathFinder] ERROR: ${(error as Error).message}`);
+        console.log(`[aiPathFinder] Stack trace:`, (error as Error).stack);
         log('[aiPathFinder] Error in AI path discovery:', (error as Error).message);
         return 0;
     }

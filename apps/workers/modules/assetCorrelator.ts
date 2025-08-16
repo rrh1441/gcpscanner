@@ -111,6 +111,7 @@ export async function runAssetCorrelator(job: {
   domain: string; 
   tier?: 'tier1' | 'tier2' 
 }): Promise<void> {
+  console.log(`[assetCorrelator] START at ${new Date().toISOString()}`);
   const { scanId, domain, tier = 'tier1' } = job;
   const startTime = Date.now();
   const TIMEOUT_MS = 30000; // 30 second overall timeout
@@ -130,6 +131,7 @@ export async function runAssetCorrelator(job: {
 
   } catch (error) {
     const elapsed = Date.now() - startTime;
+    console.log(`[assetCorrelator] ERROR: ${(error as Error).message} after ${elapsed}ms`);
     log(`[assetCorrelator] Failed after ${elapsed}ms:`, (error as Error).message);
     
     await insertArtifact({
@@ -147,6 +149,7 @@ export async function runAssetCorrelator(job: {
 }
 
 async function correlateAssets(scanId: string, domain: string): Promise<void> {
+  const startTime = Date.now();
   const dnsCache = new DNSCache();
   const assets = new Map<string, CorrelatedAsset>();
   const correlatedArtifactIds = new Set<number>();
@@ -206,6 +209,8 @@ async function correlateAssets(scanId: string, domain: string): Promise<void> {
     throw error;
   }
 
+  console.log(`[assetCorrelator] Available data from: ${artifactCount} artifacts`);
+  console.log(`[assetCorrelator] Correlating ${artifactCount} artifacts with ${allHostnames.size} hostnames...`);
   log(`[assetCorrelator] Found ${artifactCount} artifacts, resolving ${allHostnames.size} hostnames`);
 
   // Phase 2: Batch DNS resolution
@@ -319,8 +324,10 @@ async function correlateAssets(scanId: string, domain: string): Promise<void> {
       }
     });
 
+    console.log(`[assetCorrelator] COMPLETE: Correlated ${assetArray.length} assets in ${Date.now() - startTime}ms`);
     log(`[assetCorrelator] Successfully correlated ${correlatedCount} artifacts into ${assetArray.length} assets`);
   } else {
+    console.log(`[assetCorrelator] COMPLETE: No correlatable assets found in ${artifactCount} artifacts`);
     log(`[assetCorrelator] No correlatable assets found in ${artifactCount} artifacts`);
   }
 }

@@ -1,4 +1,4 @@
-# Multi-stage build for worker with heavy security tooling
+# Multi-stage build for scanner service
 FROM node:20-alpine AS builder
 
 WORKDIR /app
@@ -11,7 +11,7 @@ COPY apps/workers/package.json ./apps/workers/
 RUN corepack enable && corepack prepare pnpm@latest --activate
 RUN pnpm install --frozen-lockfile
 
-# Copy source files (excluding node_modules to avoid conflicts)
+# Copy source files
 COPY apps/ ./apps/
 COPY common/ ./common/
 COPY packages/ ./packages/
@@ -30,7 +30,7 @@ RUN apk add --no-cache \
     ttf-freefont libx11 libxcomposite libxdamage \
     gcompat bind-tools nmap
 
-# Try to install sslscan from Alpine packages first, fallback to binary
+# Install sslscan
 RUN apk add --no-cache sslscan || \
     (wget -O /usr/local/bin/sslscan https://github.com/rbsec/sslscan/releases/download/2.0.15/sslscan-2.0.15-static-linux-x86_64 && \
      chmod +x /usr/local/bin/sslscan)
@@ -50,9 +50,6 @@ RUN curl -sSL https://github.com/trufflesecurity/trufflehog/releases/download/v$
 # Install Python dependencies
 RUN pip3 install --no-cache-dir --break-system-packages \
     dnstwist python-whois webtech requests aiohttp
-
-# Install sslscan for TLS vulnerability scanning
-RUN apk add --no-cache sslscan
 
 # Set up Chromium and force IPv4 DNS resolution
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
@@ -84,5 +81,5 @@ USER scanner
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD node -e "console.log('healthy')" || exit 1
 
-# Default command - run the HTTP server for Eventarc
+# Run the HTTP server for Eventarc
 CMD ["node", "apps/workers/dist/server.js"]

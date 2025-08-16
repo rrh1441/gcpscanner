@@ -97,7 +97,8 @@ function isValidIP(ip: string): boolean {
 async function checkAbuseIPDB(ip: string): Promise<RiskAssessment | null> {
   const apiKey = process.env.ABUSEIPDB_API_KEY;
   if (!apiKey) {
-    throw new Error('ABUSEIPDB_API_KEY environment variable not set');
+    log('ABUSEIPDB_API_KEY not set - skipping AbuseIPDB check');
+    return null;
   }
 
   if (!isValidIP(ip)) {

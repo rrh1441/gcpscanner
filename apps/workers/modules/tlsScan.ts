@@ -6,7 +6,7 @@
  * =============================================================================
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,53 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const exec = promisify(execFile);
+
+/**
+ * Run sslscan via spawn with streamed IO to avoid maxBuffer dead-locks in execFile.
+ * Returns collected stdout/stderr once the process exits or rejects on error/timeout.
+ */
+function runSslscan(host: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    console.log(`[tlsScan] Starting sslscan process for ${host}...`);
+    const args = ['--xml=-', '--no-colour', '--timeout=30', host];
+    const proc = spawn('sslscan', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let stdout = '';
+    let stderr = '';
+    let bytesReceived = 0;
+
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      bytesReceived += chunk.length;
+      console.log(`[tlsScan] Received ${bytesReceived} bytes from sslscan`);
+    });
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on('error', (err) => reject(err));
+
+    proc.on('close', (code) => {
+      if (code === 0 || stdout) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`sslscan exited with code ${code}`));
+      }
+    });
+
+    // Failsafe: kill if over module timeout
+    const killer = setTimeout(() => {
+      console.log(`[tlsScan] WARNING: sslscan timeout after ${TLS_SCAN_TIMEOUT_MS / 1000}s, killing process`);
+      proc.kill('SIGKILL');
+      reject(new Error('sslscan timeout'));
+    }, TLS_SCAN_TIMEOUT_MS);
+
+    proc.on('exit', (code) => {
+      clearTimeout(killer);
+      console.log(`[tlsScan] sslscan completed with code ${code}`);
+    });
+  });
+}
 
 /* ---------- Types --------------------------------------------------------- */
 
@@ -86,7 +133,7 @@ const TLS_DERIVATION_PREFIXES = ['www']; // extend with 'app', 'login', etc. if 
 /** Validate sslscan is available */
 async function validateSSLScan(): Promise<boolean> {
   try {
-    const result = await exec('sslscan', ['--version']);
+    const result = await exec('sslscan', ['--version'], { maxBuffer: 10 * 1024 * 1024 }); // 10MB buffer
     log(`[tlsScan] sslscan found: ${result.stdout?.trim() || 'version check ok'}`);
     return true;
   } catch (error) {
@@ -100,7 +147,8 @@ async function runPythonCertificateValidator(host: string, port: number = 443): 
   try {
     const pythonScript = join(__dirname, '../../scripts/tls_verify.py');
     const result = await exec('python3', [pythonScript, host, '--port', port.toString(), '--json'], {
-      timeout: 30000 // 30 second timeout
+      timeout: 30000, // 30 second timeout
+      maxBuffer: 10 * 1024 * 1024 // 10MB buffer to prevent hanging
     });
     
     const validationResult = JSON.parse(result.stdout || '{}') as PythonValidationResult;
@@ -189,7 +237,7 @@ function parseSSLScanOutput(xmlOutput: string, host: string): SSLScanResult | nu
 async function isCloudFlareProtected(hostname: string): Promise<boolean> {
   try {
     // Check DNS for known CDN IP ranges
-    const { stdout } = await exec('dig', ['+short', hostname]);
+    const { stdout } = await exec('dig', ['+short', hostname], { maxBuffer: 10 * 1024 * 1024 }); // 10MB buffer
     const ips = stdout.trim().split('\n').filter(ip => ip.includes('.'));
     
     // Comprehensive CDN IP ranges
@@ -430,20 +478,17 @@ async function performCrossValidation(
 /* ---------- Core host-scan routine ---------------------------------------- */
 
 async function scanHost(host: string, scanId?: string): Promise<ScanOutcome> {
+  const start = Date.now();
   let findingsCount = 0;
   let certificateSeen = false;
 
   try {
+    console.log(`[tlsScan] Starting scan for ${host}...`);
     log(`[tlsScan] Scanning ${host} with hybrid validation (sslscan + Python)...`);
     
     // Run both sslscan and Python validator concurrently
     const [sslscanResult, pythonResult] = await Promise.allSettled([
-      exec('sslscan', [
-        '--xml=-',  // Output XML to stdout
-        '--no-colour',
-        '--timeout=30',
-        host
-      ], { timeout: TLS_SCAN_TIMEOUT_MS }),
+      runSslscan(host),
       runPythonCertificateValidator(host)
     ]);
 
@@ -655,15 +700,19 @@ async function scanHost(host: string, scanId?: string): Promise<ScanOutcome> {
     }
 
   } catch (error) {
+    console.log(`[tlsScan] ERROR: Scan failed for ${host}: ${(error as Error).message}`);
     log(`[tlsScan] Scan failed for ${host}: ${(error as Error).message}`);
   }
 
+  console.log(`[tlsScan] Scan for ${host} completed in ${Date.now() - start}ms`);
   return { findings: findingsCount, hadCert: certificateSeen };
 }
 
 /* ---------- Public entry-point ------------------------------------------- */
 
 export async function runTlsScan(job: { domain: string; scanId?: string }): Promise<number> {
+  console.log(`[tlsScan] START ${job.domain} at ${new Date().toISOString()}`);
+  const start = Date.now();
   const input = job.domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*/, '');
 
   // Validate sslscan is available
@@ -755,6 +804,7 @@ export async function runTlsScan(job: { domain: string; scanId?: string }): Prom
     }
   });
 
+  console.log(`[tlsScan] COMPLETE: Found ${totalFindings} TLS issues in ${Date.now() - start}ms`);
   log(`[tlsScan] Scan complete. Hosts: ${[...candidates].join(', ')}. Findings: ${totalFindings}`);
   return totalFindings;
 }

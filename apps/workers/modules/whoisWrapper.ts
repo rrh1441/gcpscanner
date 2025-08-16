@@ -56,6 +56,7 @@ export async function resolveWhoisBatch(domains: string[]): Promise<{ records: W
     const pythonScript = join(new URL('.', import.meta.url).pathname, 'whoisResolver.py');
     const { stdout, stderr } = await exec('python3', [pythonScript, ...domains], { 
         timeout: 60_000,
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer to prevent hanging
         env: { 
           ...process.env, 
           WHOXY_API_KEY: process.env.WHOXY_API_KEY || ''
@@ -167,6 +168,7 @@ export async function runWhoisWrapper(job: { domain: string; scanId?: string }):
         });
       }
       
+      console.log(`[whoisWrapper] COMPLETED at ${new Date().toISOString()}. Source: ${record.source}, Cost saved: $${result.stats.saved_vs_whoisxml.toFixed(3)}`);
       log(`[whoisWrapper] WHOIS lookup completed. Source: ${record.source}, Cost saved: $${result.stats.saved_vs_whoisxml.toFixed(3)}`);
       return 1; // One finding
     }

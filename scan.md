@@ -6,10 +6,13 @@
 ```bash
 curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan \
   -H "Content-Type: application/json" \
-  -d '{"companyName": "Company Name", "domain": "example.com"}'
+  -d '{"companyName": "Vulnerable Test Site", "domain": "vulnerable-test-site.vercel.app"}'
 ```
 
 **Note:** The API uses camelCase field names (`companyName`, not `company_name`)
+
+
+
 
 ### Response Format
 ```json
@@ -17,8 +20,8 @@ curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan \
   "scanId": "E_P4qM_Szq6",
   "status": "queued",
   "companyName": "Company Name", 
-  "domain": "example.com",
-  "originalDomain": "example.com",
+  "domain": "vulnerable-test-site.vercel.app",
+  "originalDomain": "vulnerable-test-site.vercel.app",
   "message": "Scan started successfully"
 }
 ```
@@ -54,7 +57,7 @@ gcloud firestore documents get scans/SCAN_ID \
 curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/bulk \
   -H "Content-Type: application/json" \
   -d '[
-    {"companyName": "Company 1", "domain": "example1.com"},
+    {"companyName": "Vulnerable Test Site", "domain": "vulnerable-test-site.vercel.app"},
     {"companyName": "Company 2", "domain": "example2.com"}
   ]'
 ```
@@ -71,7 +74,7 @@ curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan/csv \
 ```bash
 curl -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan \
   -H "Content-Type: application/json" \
-  -d '{"companyName": "Company Name", "domain": "example.com", "tags": ["priority", "customer"]}'
+  -d '{"companyName": "Vulnerable Test Site", "domain": "vulnerable-test-site.vercel.app", "tags": ["priority", "test"]}'
 ```
 
 ### Scan Tiers
@@ -167,7 +170,7 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 # 1. Trigger scan
 RESPONSE=$(curl -s -X POST https://scanner-api-w6v7pps5wa-uc.a.run.app/scan \
   -H "Content-Type: application/json" \
-  -d '{"companyName": "Test Company", "domain": "example.com"}')
+  -d '{"companyName": "Vulnerable Test Site", "domain": "vulnerable-test-site.vercel.app"}')
 
 # 2. Extract scan ID
 SCAN_ID=$(echo $RESPONSE | grep -o '"scanId":"[^"]*' | cut -d'"' -f4)
