@@ -16,7 +16,6 @@ import {
   detectFromHeaders,
 } from '../util/fastTechDetection.js';
 import { detectTechnologyByFavicon } from '../util/faviconDetection.js';
-import { UnifiedCache } from './techCache/index.js';
 
 // Configuration
 const CONFIG = {
@@ -28,7 +27,7 @@ const CONFIG = {
 
 type Severity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 const RISK_TO_SEVERITY: Record<'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL', Severity> = {
-  LOW: 'INFO',
+  LOW: 'LOW',
   MEDIUM: 'MEDIUM',
   HIGH: 'HIGH',
   CRITICAL: 'CRITICAL'
@@ -77,13 +76,13 @@ interface EnhancedSecAnalysis {
 
 interface ScanMetrics {
   totalTargets: number;
-  thirdPartyOrigins: number;
+  targetsScanned: number;
+  targetsFailed: number;
   uniqueTechs: number;
   supplyFindings: number;
   runMs: number;
   circuitBreakerTripped: boolean;
-  cacheHitRate: number;
-  dynamic_browser_skipped?: boolean;
+  detectorsUsed: string[];
 }
 
 // Cache removed for simplicity
@@ -107,8 +106,34 @@ function detectEcosystem(tech: TechResult): string {
   return 'unknown';
 }
 
+// Simple concurrency controller
+async function mapConcurrent<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<void>[] = [];
+  
+  for (const item of items) {
+    const promise = fn(item).then(result => {
+      results.push(result);
+    });
+    
+    executing.push(promise);
+    
+    if (executing.length >= limit) {
+      await Promise.race(executing);
+      executing.splice(executing.findIndex(p => p === promise), 1);
+    }
+  }
+  
+  await Promise.all(executing);
+  return results;
+}
+
 // Simplified target discovery
-async function discoverTargets(scanId: string, domain: string, providedTargets?: string[]) {
+async function discoverTargets(domain: string, providedTargets?: string[]) {
   const targets = new Set<string>();
   
   // Add primary domain targets
@@ -122,13 +147,7 @@ async function discoverTargets(scanId: string, domain: string, providedTargets?:
   
   return {
     primary: Array.from(targets).slice(0, 5),
-    thirdParty: [],
-    total: targets.size,
-    metrics: {
-      htmlCount: targets.size,
-      nonHtmlCount: 0,
-      thirdPartySkipped: false
-    }
+    total: targets.size
   };
 }
 
@@ -162,46 +181,84 @@ export async function runTechStackScan(job: {
 
   try {
     // 1. TARGET DISCOVERY
-    const targetResult = await discoverTargets(scanId, domain, providedTargets);
+    const targetResult = await discoverTargets(domain, providedTargets);
     const allTargets = targetResult.primary;
     
     console.log(`[techStackScan] Target discovery complete: ${targetResult.total} targets found`);
     log(`techstack=targets total=${targetResult.total} html=${allTargets.length}`);
     
-    // 2. TECHNOLOGY DETECTION
-    let allDetections: TechResult[] = [];
+    // 2. TECHNOLOGY DETECTION WITH CONCURRENCY
     let circuitBreakerTripped = false;
+    let consecutiveFailures = 0;
     
-    for (const url of allTargets.slice(0, 5)) {
-      try {
-        console.log(`[techStackScan] Starting WebTech detection for ${url}...`);
-        const webtech = await detectTechnologiesWithWebTech(url);
-        allDetections.push(...webtech.technologies);
-        console.log(`[techStackScan] WebTech complete: ${webtech.technologies.length} technologies found`);
-        
-        if (webtech.technologies.length === 0) {
-          console.log(`[techStackScan] Starting WhatWeb detection for ${url}...`);
-          const whatweb = await detectTechnologiesWithWhatWeb(url);
-          allDetections.push(...whatweb.technologies);
-          console.log(`[techStackScan] WhatWeb complete: ${whatweb.technologies.length} technologies found`);
+    // Process targets concurrently with circuit breaker
+    const detectionsPerUrl = await mapConcurrent(
+      allTargets.slice(0, 5),
+      CONFIG.MAX_CONCURRENCY,
+      async (url) => {
+        // Check circuit breaker
+        if (circuitBreakerTripped) {
+          console.log(`[techStackScan] Skipping ${url} - circuit breaker tripped`);
+          return { url, detections: [], error: 'circuit-breaker-tripped' };
         }
         
-        if (allDetections.length === 0) {
-          console.log(`[techStackScan] Starting header detection for ${url}...`);
-          const headers = await detectFromHeaders(url);
-          allDetections.push(...headers);
-          console.log(`[techStackScan] Header detection complete: ${headers.length} technologies found`);
-        }
+        const urlDetections: TechResult[] = [];
+        let hasError = false;
+        
+        try {
+          console.log(`[techStackScan] Starting httpx detection for ${url}...`);
+          const webtech = await detectTechnologiesWithWebTech(url); // This now uses httpx internally
+          urlDetections.push(...webtech.technologies);
+          console.log(`[techStackScan] httpx complete: ${webtech.technologies.length} technologies found`);
+          
+          // Run WhatWeb if httpx found nothing
+          if (webtech.technologies.length === 0) {
+            console.log(`[techStackScan] Starting WhatWeb detection for ${url}...`);
+            const whatweb = await detectTechnologiesWithWhatWeb(url);
+            urlDetections.push(...whatweb.technologies);
+            console.log(`[techStackScan] WhatWeb complete: ${whatweb.technologies.length} technologies found`);
+          }
+          
+          // Headers fallback if still nothing
+          if (urlDetections.length === 0) {
+            console.log(`[techStackScan] Starting header detection for ${url}...`);
+            const headers = await detectFromHeaders(url);
+            urlDetections.push(...headers);
+            console.log(`[techStackScan] Header detection complete: ${headers.length} technologies found`);
+          }
 
-        console.log(`[techStackScan] Starting favicon detection for ${url}...`);
-        const favicon = await detectTechnologyByFavicon(url);
-        if (favicon.length > 0) {
-          allDetections.push(...favicon);
+          // Always try favicon (it's cheap and adds signals)
+          console.log(`[techStackScan] Starting favicon detection for ${url}...`);
+          const favicon = await detectTechnologyByFavicon(url);
+          if (favicon.length > 0) {
+            urlDetections.push(...favicon);
+          }
+          console.log(`[techStackScan] Favicon detection complete: ${favicon.length} technologies found`);
+          
+        } catch (err) {
+          hasError = true;
+          log(`Error detecting tech for ${url}:`, (err as Error).message);
         }
-        console.log(`[techStackScan] Favicon detection complete: ${favicon.length} technologies found`);
-      } catch (err) {
-        log(`Error detecting tech for ${url}:`, (err as Error).message);
+        
+        // Update circuit breaker state
+        if (hasError && urlDetections.length === 0) {
+          consecutiveFailures++;
+          if (consecutiveFailures >= CONFIG.TECH_CIRCUIT_BREAKER) {
+            circuitBreakerTripped = true;
+            console.log(`[techStackScan] Circuit breaker tripped after ${consecutiveFailures} failures`);
+          }
+        } else {
+          consecutiveFailures = 0; // Reset on success
+        }
+        
+        return { url, detections: urlDetections, error: hasError ? 'detection-failed' : undefined };
       }
+    );
+    
+    // Merge all detections
+    let allDetections: TechResult[] = [];
+    for (const result of detectionsPerUrl) {
+      allDetections.push(...result.detections);
     }
 
     const techMap = new Map<string, TechResult>();
@@ -306,15 +363,26 @@ export async function runTechStackScan(job: {
 
     // 5. METRICS AND SUMMARY
     const runMs = Date.now() - start;
+    const targetsFailed = detectionsPerUrl.filter(r => r.error).length;
+    const detectorsUsed = new Set<string>();
+    
+    // Track which detectors found something
+    for (const tech of allDetections) {
+      if (tech.categories?.includes('httpx')) detectorsUsed.add('httpx');
+      if (tech.categories?.includes('WhatWeb')) detectorsUsed.add('whatweb');
+      if (tech.categories?.includes('Headers')) detectorsUsed.add('headers');
+      if (tech.categories?.includes('Favicon')) detectorsUsed.add('favicon');
+    }
+    
     const metrics: ScanMetrics = {
       totalTargets: targetResult.total,
-      thirdPartyOrigins: 0,
+      targetsScanned: detectionsPerUrl.length,
+      targetsFailed,
       uniqueTechs: techMap.size,
       supplyFindings,
       runMs,
       circuitBreakerTripped,
-      cacheHitRate: 0,
-      dynamic_browser_skipped: false
+      detectorsUsed: Array.from(detectorsUsed)
     };
 
     await insertArtifact({

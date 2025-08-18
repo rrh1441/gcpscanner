@@ -410,7 +410,9 @@ export async function runNuclei(options: NucleiOptions): Promise<NucleiExecution
         ...process.env, 
         NO_COLOR: '1',
         // This is crucial for running headless Chrome in Docker
-        NUCLEI_DISABLE_SANDBOX: 'true'
+        NUCLEI_DISABLE_SANDBOX: 'true',
+        // Force IPv4 for Go binaries to prevent IPv6 DNS hangs
+        GODEBUG: 'netdns=go+v4'
       }
     });
     

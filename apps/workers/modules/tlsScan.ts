@@ -17,6 +17,7 @@ import { logLegacy as log } from '../core/logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+
 const exec = promisify(execFile);
 
 /**
@@ -26,8 +27,14 @@ const exec = promisify(execFile);
 function runSslscan(host: string): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     console.log(`[tlsScan] Starting sslscan process for ${host}...`);
-    const args = ['--xml=-', '--no-colour', '--timeout=30', host];
-    const proc = spawn('sslscan', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const args = ['--xml=-', '--no-colour', '--timeout=30', host]; // Removed --ipv4 as it may not be supported
+    const proc = spawn('sslscan', args, { 
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        GODEBUG: 'netdns=go+v4' // Force IPv4 for Go binaries (though sslscan is C++)
+      }
+    });
 
     let stdout = '';
     let stderr = '';
@@ -148,7 +155,8 @@ async function runPythonCertificateValidator(host: string, port: number = 443): 
     const pythonScript = join(__dirname, '../../scripts/tls_verify.py');
     const result = await exec('python3', [pythonScript, host, '--port', port.toString(), '--json'], {
       timeout: 30000, // 30 second timeout
-      maxBuffer: 10 * 1024 * 1024 // 10MB buffer to prevent hanging
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer to prevent hanging
+      killSignal: 'SIGKILL' // Actually kill the process if it hangs
     });
     
     const validationResult = JSON.parse(result.stdout || '{}') as PythonValidationResult;

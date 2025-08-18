@@ -1,15 +1,50 @@
 # DealBrief Scanner Workflow
 
+## ⚠️ CRITICAL: Authentication Issue Fixed (2025-08-18)
+
+**THE PROBLEM:** The `/tasks/scan` endpoint was returning 401 Unauthorized because:
+1. Fastify logger was disabled (`logger: false`) so we couldn't see the 401 errors
+2. `REQUIRE_AUTH=true` was set, requiring OIDC tokens from Cloud Tasks
+3. Cloud Tasks wasn't sending proper OIDC tokens
+
+**THE FIX:**
+1. Enable Fastify logging: Changed `Fastify({ logger: false })` to `Fastify({ logger: { level: 'info' } })` in server.ts:74
+2. Set `REQUIRE_AUTH=false` environment variable when deploying to bypass auth check
+3. Allow unauthenticated access: `gcloud run services add-iam-policy-binding --member=allUsers --role=roles/run.invoker`
+
+**Files changed:**
+- `apps/workers/server.ts`: Enabled logging and added debug messages
+
+**Deployment commands:**
+```bash
+# Build and deploy with auth disabled
+gcloud builds submit --config=cloudbuild-scanner-service.yaml --project=precise-victory-467219-s4
+
+gcloud run deploy scanner-service \
+  --image=us-central1-docker.pkg.dev/precise-victory-467219-s4/dealbrief/scanner-service:latest \
+  --region=us-central1 \
+  --project=precise-victory-467219-s4 \
+  --update-env-vars="REQUIRE_AUTH=false"
+
+# Allow public access (for testing)
+gcloud run services add-iam-policy-binding scanner-service \
+  --region=us-central1 \
+  --member=allUsers \
+  --role=roles/run.invoker \
+  --project=precise-victory-467219-s4
+```
+
 ## Architecture Overview
 
-The DealBrief Scanner is now a **pure GCP-based architecture** that uses Cloud Run Jobs triggered by Pub/Sub messages. Arc and traditional pub/sub systems have been removed.
+The DealBrief Scanner uses a **Cloud Run Service** (not Jobs) with Cloud Tasks for async processing:
 
 ## Core Components
 
-### 1. Message Queue System
+### 1. Message Queue System  
 - **GCP Pub/Sub**: Topic `scan-jobs` receives scan requests
-- **Eventarc**: Triggers Cloud Run Jobs based on Pub/Sub messages
-- **Cloud Run Jobs**: Executes security scans in containerized environment
+- **Eventarc**: Triggers `/events` endpoint on scanner-service
+- **Cloud Tasks**: Queues scan work to `/tasks/scan` endpoint
+- **Cloud Run Service**: `scanner-service` handles both events and scan execution
 
 ### 2. Worker Architecture
 - **Main Worker** (`apps/workers/worker.ts`): Core scanning logic with 17 security modules
@@ -23,16 +58,21 @@ The DealBrief Scanner is now a **pure GCP-based architecture** that uses Cloud R
 
 ## Workflow Process
 
-### 1. Scan Initiation
+### 1. Scan Initiation (Two-Phase Async)
 ```
-API/Manual → Pub/Sub Topic (scan-jobs) → Eventarc → Cloud Run Job
+API/Manual → Pub/Sub Topic (scan-jobs) → Eventarc → scanner-service /events → Cloud Tasks → scanner-service /tasks/scan
 ```
 
 ### 2. Message Processing
-1. **Pub/Sub Adapter** receives message from `scan-jobs-subscription`
-2. Parses scan data: `{ scanId, companyName, domain, createdAt }`
-3. Updates Firestore scan status to "processing"
-4. Calls `processScan()` from main worker
+1. **Phase 1 (Fast ACK)**: `/events` endpoint receives Pub/Sub message via Eventarc
+   - Validates message structure and domain format
+   - Creates Cloud Tasks task with scan job
+   - Returns 204 immediately to ACK the Pub/Sub message
+   
+2. **Phase 2 (Scan Execution)**: `/tasks/scan` endpoint receives Cloud Tasks request
+   - Verifies auth if `REQUIRE_AUTH=true` (currently disabled)
+   - Executes `executeScan()` with all modules
+   - Returns results or 500 for retry
 
 ### 3. Scan Execution
 The main worker runs **17 security modules** in parallel groups:

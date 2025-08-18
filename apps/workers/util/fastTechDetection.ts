@@ -33,38 +33,66 @@ export interface TechDetectionResult {
 }
 
 /**
- * Detect technologies using WebTech Python tool (much faster than Wappalyzer API)
+ * Detect technologies using httpx (fast, reliable, no hanging)
+ * Replaces problematic WebTech Python module
  */
-export async function detectTechnologiesWithWebTech(url: string): Promise<TechDetectionResult> {
+export async function detectTechnologiesWithHttpx(url: string): Promise<TechDetectionResult> {
   const startTime = Date.now();
   
   try {
-    log(`Starting WebTech detection for ${url}`);
+    log(`Starting httpx tech detection for ${url}`);
     
-    // Use webtech with JSON output
-    const { stdout } = await exec('python3', ['-m', 'webtech', '-u', url, '--json'], {
-      timeout: 5000 // 5 second timeout for speed
+    // Use httpx with tech detection enabled
+    const { stdout } = await exec('httpx', [
+      '-u', url,
+      '-td',               // tech-detect flag
+      '-json',             // JSON output
+      '-timeout', '10',    // 10-second per-request timeout
+      '-silent',           // No banner/progress
+      '-no-color'          // No color codes in output
+    ], {
+      timeout: 15000,   // 15-second overall timeout for the process
+      killSignal: 'SIGKILL', // Hard-kill if still running after timeout
+      env: {
+        ...process.env,
+        GODEBUG: 'netdns=go+v4' // Force IPv4 for Go binaries
+      }
     });
     
-    const result = JSON.parse(stdout);
     const technologies: FastTechResult[] = [];
     
-    if (result.applications) {
-      for (const app of result.applications) {
-        technologies.push({
-          name: app.name,
-          slug: app.name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-          version: app.version || undefined,
-          categories: app.categories || ['Unknown'],
-          confidence: app.confidence || 100,
-          website: app.website,
-          description: app.description
-        });
+    // httpx outputs JSON lines, parse each line
+    const lines = stdout.trim().split('\n');
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const result = JSON.parse(line);
+        
+        // httpx puts tech info in the 'tech' field
+        if (result.tech && Array.isArray(result.tech)) {
+          for (const tech of result.tech) {
+            // tech can be a string like "nginx:1.18.0" or just "nginx"
+            const [name, version] = typeof tech === 'string' 
+              ? tech.split(':') 
+              : [tech.name || tech, tech.version];
+            
+            technologies.push({
+              name: name,
+              slug: name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+              version: version || undefined,
+              categories: ['Detected'],
+              confidence: 90, // httpx is quite reliable
+              description: `Detected by httpx`
+            });
+          }
+        }
+      } catch (e) {
+        // Skip malformed lines
       }
     }
 
     const duration = Date.now() - startTime;
-    log(`WebTech detection completed for ${url}: ${technologies.length} techs in ${duration}ms`);
+    log(`httpx detection completed for ${url}: ${technologies.length} techs in ${duration}ms`);
 
     return {
       technologies,
@@ -75,9 +103,9 @@ export async function detectTechnologiesWithWebTech(url: string): Promise<TechDe
   } catch (error) {
     const duration = Date.now() - startTime;
     const errorMsg = (error as Error).message;
-    log(`WebTech detection failed for ${url}: ${errorMsg} (${duration}ms)`);
+    log(`httpx detection failed for ${url}: ${errorMsg} (${duration}ms)`);
 
-    // Fallback to header detection if WebTech fails
+    // Fallback to header detection if httpx fails
     const headerTechs = await detectFromHeaders(url);
     
     return {
@@ -87,6 +115,14 @@ export async function detectTechnologiesWithWebTech(url: string): Promise<TechDe
       error: errorMsg,
     };
   }
+}
+
+/**
+ * Legacy WebTech function - redirects to httpx
+ * Kept for backward compatibility
+ */
+export async function detectTechnologiesWithWebTech(url: string): Promise<TechDetectionResult> {
+  return detectTechnologiesWithHttpx(url);
 }
 
 /**
@@ -100,7 +136,8 @@ export async function detectTechnologiesWithWhatWeb(url: string): Promise<TechDe
     
     // Use whatweb with JSON output and aggressive level 3 scanning
     const { stdout } = await exec('whatweb', ['--log-json=-', '-a', '3', url], {
-      timeout: 3000 // 3 second timeout for speed
+      timeout: 3000, // 3 second timeout for speed
+      killSignal: 'SIGKILL' // Actually kill the process if it hangs
     });
     
     const lines = stdout.trim().split('\n');

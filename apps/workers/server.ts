@@ -71,7 +71,11 @@ async function enqueueScanTask(job: ScanJob): Promise<void> {
 }
 
 export function buildServer() {
-  const app = Fastify({ logger: true });
+  const app = Fastify({ 
+    logger: {
+      level: 'info'
+    }
+  });
 
   // Health — NO external calls
   app.get('/', async () => ({ status: 'ok', ts: Date.now() }));
@@ -113,7 +117,7 @@ export function buildServer() {
     
     // Validate Pub/Sub message structure
     if (!body || typeof body !== 'object' || !body.message) {
-      req.log.warn({ body }, 'Invalid Pub/Sub envelope structure');
+      console.warn('Invalid Pub/Sub envelope structure:', body);
       return reply.code(204).send(); // ack to avoid redelivery
     }
     
@@ -122,18 +126,18 @@ export function buildServer() {
     
     // Validate the scan job payload
     if (!msg || typeof msg !== 'object' || !msg.domain || typeof msg.domain !== 'string') {
-      req.log.warn({ 
+      console.warn('Invalid scan job payload:', {
         subscription: body.subscription,
         messageData: body.message.data,
         parsed: msg 
-      }, 'Invalid scan job payload');
+      });
       return reply.code(204).send(); // ack to avoid redelivery loop
     }
     
     // Validate domain format (basic check)
     const domainRegex = /^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,}$/i;
     if (!domainRegex.test(msg.domain)) {
-      req.log.warn({ domain: msg.domain }, 'Invalid domain format');
+      console.warn('Invalid domain format:', msg.domain);
       return reply.code(204).send();
     }
 
@@ -146,24 +150,24 @@ export function buildServer() {
     };
 
     // Log the incoming event
-    req.log.info({ 
+    console.log('[events] Received Pub/Sub event:', {
       scan_id: job.scan_id,
       domain: job.domain,
       subscription: body.subscription,
       messageId: (body.message as any)?.messageId
-    }, 'Received Pub/Sub event');
+    });
 
     // Enqueue to Cloud Tasks and ack immediately
     try {
       await enqueueScanTask(job);
-      req.log.info({ scan_id: job.scan_id }, 'Successfully enqueued scan task');
+      console.log('[events] Successfully enqueued scan task:', job.scan_id);
       return reply.code(204).send(); // 2xx == ack
     } catch (err) {
-      req.log.error({ 
-        err, 
+      console.error('[events] Failed to enqueue task:', {
+        error: err, 
         scan_id: job.scan_id,
         domain: job.domain 
-      }, 'Failed to enqueue task');
+      });
       // Still 204 to avoid redelivery loops; alternatively 500 if you prefer redelivery
       return reply.code(204).send();
     }
@@ -171,38 +175,45 @@ export function buildServer() {
 
   // --- Cloud Tasks worker endpoint ---
   app.post<{ Body: ScanJob }>('/tasks/scan', async (req, reply) => {
+    console.log('🔥 /tasks/scan HANDLER REACHED! Headers:', req.headers);
     const startTime = Date.now();
     const body = req.body as ScanJob;
     const { scan_id, domain } = body ?? {};
     
+    console.log('📦 Body received:', body);
+    
     if (!scan_id || !domain) {
+      console.error('❌ Missing required fields:', { scan_id, domain });
       return reply.code(400).send({ error: 'scan_id and domain are required' });
     }
 
     // Verify OIDC token if configured
     const authHeader = req.headers.authorization;
-    if (process.env.REQUIRE_AUTH === 'true' && !authHeader?.startsWith('Bearer ')) {
-      req.log.warn({ scan_id }, 'Missing or invalid authorization header');
+    const requireAuth = process.env.REQUIRE_AUTH === 'true';
+    console.log('🔐 Auth check:', { requireAuth, hasAuthHeader: !!authHeader });
+    
+    if (requireAuth && !authHeader?.startsWith('Bearer ')) {
+      console.warn('[worker] Missing or invalid authorization header for scan:', scan_id);
       return reply.code(401).send({ error: 'Unauthorized' });
     }
 
-    req.log.info({ 
+    console.log('[worker] starting scan:', {
       scan_id, 
       domain,
       task_queue_name: req.headers['x-cloudtasks-queuename'],
       task_retry_count: req.headers['x-cloudtasks-taskretrycount'],
       task_execution_count: req.headers['x-cloudtasks-taskexecutioncount']
-    }, '[worker] starting scan');
+    });
     
     try {
       const result = await executeScan({ scan_id, domain });
       
       const duration = Date.now() - startTime;
-      req.log.info({ 
+      console.log('[worker] scan completed successfully:', {
         scan_id,
         duration_ms: duration,
         modules_completed: Object.keys(result.results).length
-      }, '[worker] scan completed successfully');
+      });
 
       // TODO: persist result to Firestore/DB here
       // await persistToFirestore(result);
@@ -210,13 +221,13 @@ export function buildServer() {
       return reply.code(200).send(result);
     } catch (err) {
       const duration = Date.now() - startTime;
-      req.log.error({ 
+      console.error('[worker] scan failed:', {
         scan_id,
         domain,
         duration_ms: duration,
         error: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined
-      }, '[worker] scan failed');
+      });
       
       // Return 500 to trigger Cloud Tasks retry
       return reply.code(500).send({ 
