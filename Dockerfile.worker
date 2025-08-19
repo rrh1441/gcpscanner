@@ -63,6 +63,11 @@ RUN echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
 
 # Install sslscan for TLS vulnerability scanning
 RUN apk add --no-cache sslscan
+# Install nuclei (Tier-2 vulnerability scanner)
+RUN wget -q https://github.com/projectdiscovery/nuclei/releases/download/v3.0.1/nuclei_3.0.1_linux_amd64.zip \
+    && unzip -o -q nuclei_3.0.1_linux_amd64.zip -d /usr/local/bin \
+    && chmod +x /usr/local/bin/nuclei \
+    && rm -f nuclei_3.0.1_linux_amd64.zip LICENSE.md README.md
 
 # Set up Chromium and force IPv4 DNS resolution
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \

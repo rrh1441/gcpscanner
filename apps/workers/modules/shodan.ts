@@ -14,7 +14,7 @@
  * =============================================================================
  */
 
-import { httpClient, AxiosError } from '../net/httpClient.js';
+import { request } from 'undici';
 import { insertArtifact, insertFinding } from '../core/artifactStore.js';
 import { logLegacy as log } from '../core/logger.js';
 
@@ -28,7 +28,10 @@ const RPS          = Number.parseInt(process.env.SHODAN_RPS ?? '1', 10);       /
 const PAGE_LIMIT   = Number.parseInt(process.env.SHODAN_PAGE_LIMIT ?? '10', 10);
 const TARGET_LIMIT = Number.parseInt(process.env.SHODAN_TARGET_LIMIT ?? '100', 10);
 
-const SEARCH_BASE  = 'https://api.shodan.io/shodan/host/search';
+const HOST_BASE    = 'https://api.shodan.io/shodan/host/';
+
+// Simple in-memory 30-day cache (clears per process)
+const cache = new Map<string, { ts: number; data: any }>();
 
 /* -------------------------------------------------------------------------- */
 /*  Types                                                                      */
@@ -106,14 +109,23 @@ async function rlFetch<T>(url: string, attempt = 0): Promise<T> {
   tsQueue.push(Date.now());
 
   try {
-    const res = await httpClient.get<T>(url, { timeout: 30_000 });
+    const { body, statusCode } = await request(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'DealBrief-Scanner/1.0 (+https://dealbrief.com)'
+      },
+    });
+
+    if (statusCode === 403) throw new Error('HTTP 403 rate limited');
+    if (statusCode >= 500) throw new Error(`Upstream error ${statusCode}`);
+
+    const data = (await body.json()) as T;
     apiCallsCount++;
-    log(`[Shodan] API call ${apiCallsCount} - ${url.includes('search') ? 'search' : 'host'} query`);
-    return res.data;
+    log(`[Shodan] API call ${apiCallsCount}`);
+    return data;
   } catch (err) {
-    const ae = err as AxiosError;
     const retriable =
-      ae.code === 'ECONNABORTED' || (ae.response && ae.response.status >= 500);
+      (err as any).code === 'ECONNABORTED' || /Upstream/.test((err as Error).message);
     if (retriable && attempt < 3) {
       const backoff = 500 * 2 ** attempt;
       await new Promise((r) => setTimeout(r, backoff));
@@ -286,7 +298,7 @@ export async function runShodanScan(job: {
     let fetched = 0;
     for (let page = 1; page <= PAGE_LIMIT; page += 1) {
       const q = encodeURIComponent(`hostname:${tgt}`);
-      const url = `${SEARCH_BASE}?key=${API_KEY}&query=${q}&page=${page}`;
+      const url = `${HOST_BASE}${tgt}?key=${API_KEY}`;
 
       try {
         // eslint-disable-next-line no-await-in-loop

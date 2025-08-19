@@ -124,8 +124,7 @@ export const MODULE_EXECUTION_PLAN = {
     tier1: {
         // Phase 1: Independent discovery (parallel)
         phase1: [
-            'endpointDiscovery',
-            'aiPathFinder'
+            'endpointDiscovery'
             // Skip webArchiveScanner for speed in tier1
         ],
         // Phase 2: Dependent scanning (parallel) 

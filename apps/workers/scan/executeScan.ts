@@ -6,7 +6,7 @@ import { runBreachDirectoryProbe } from '../modules/breachDirectoryProbe.js';
 import { runShodanScan } from '../modules/shodan.js';
 import { runDocumentExposure } from '../modules/documentExposure.js';
 import { runWhoisWrapper } from '../modules/whoisWrapper.js';
-import { runAiPathFinder } from '../modules/aiPathFinder.js';
+// import { runAiPathFinder } from '../modules/aiPathFinder.js'; // Moved to Tier 2
 import { runTechStackScan } from '../modules/techStackScan.js';
 import { runAbuseIntelScan } from '../modules/abuseIntelScan.js';
 // import { runAccessibilityScan } from '../modules/accessibilityScan.js'; // Moved to Tier 2 - too slow
@@ -68,7 +68,7 @@ export async function executeScan(job: ScanJob): Promise<ScanResult> {
     
     timeModule('whois_wrapper', runWhoisWrapper({ domain, scanId: scan_id })),
     
-    timeModule('ai_path_finder', runAiPathFinder({ domain, scanId: scan_id })),
+    // ai_path_finder moved to Tier 2 - was taking 90+ seconds
     
     timeModule('endpoint_discovery', runEndpointDiscovery({ domain, scanId: scan_id })),
     

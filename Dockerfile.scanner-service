@@ -35,6 +35,12 @@ RUN apk add --no-cache sslscan || \
     (wget -O /usr/local/bin/sslscan https://github.com/rbsec/sslscan/releases/download/2.0.15/sslscan-2.0.15-static-linux-x86_64 && \
      chmod +x /usr/local/bin/sslscan)
 
+# Install nuclei (Tier-2 vulnerability scanner)
+RUN wget -q https://github.com/projectdiscovery/nuclei/releases/download/v3.0.1/nuclei_3.0.1_linux_amd64.zip \
+    && unzip -o -q nuclei_3.0.1_linux_amd64.zip -d /usr/local/bin \
+    && chmod +x /usr/local/bin/nuclei \
+    && rm -f nuclei_3.0.1_linux_amd64.zip LICENSE.md README.md
+
 # Install security tools
 ARG NUCLEI_VERSION=3.4.5
 ARG TRUFFLEHOG_VERSION=3.83.7
@@ -52,11 +58,19 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     dnstwist python-whois requests aiohttp
 
 # Install httpx for reliable tech stack detection
+# Note: httpx is a Go binary that should work on Alpine, but we test it to be sure
 RUN wget -q https://github.com/projectdiscovery/httpx/releases/download/v1.6.9/httpx_1.6.9_linux_amd64.zip && \
     unzip -o -q httpx_1.6.9_linux_amd64.zip && \
-    mv httpx /usr/local/bin/ && \
+    mv httpx /usr/local/bin/httpx.bin && \
+    chmod +x /usr/local/bin/httpx.bin && \
+    rm -f httpx_1.6.9_linux_amd64.zip LICENSE.md README.md && \
+    # Create wrapper script to ensure proper execution with GODEBUG
+    echo '#!/bin/sh' > /usr/local/bin/httpx && \
+    echo 'export GODEBUG=netdns=go+v4' >> /usr/local/bin/httpx && \
+    echo 'exec /usr/local/bin/httpx.bin "$@"' >> /usr/local/bin/httpx && \
     chmod +x /usr/local/bin/httpx && \
-    rm -f httpx_1.6.9_linux_amd64.zip LICENSE.md README.md
+    # Test httpx can execute
+    /usr/local/bin/httpx -version || (echo "httpx test failed" && exit 1)
 
 # --- Force IPv4 preference at the OS resolver level ---
 RUN echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf

@@ -102,8 +102,10 @@ export async function detectTechnologiesWithHttpx(url: string): Promise<TechDete
 
   } catch (error) {
     const duration = Date.now() - startTime;
-    const errorMsg = (error as Error).message;
-    log(`httpx detection failed for ${url}: ${errorMsg} (${duration}ms)`);
+    const errObj = error as any;
+    const errorMsg = errObj?.message || 'unknown error';
+    const stderrStr = errObj?.stderr ? String(errObj.stderr).trim() : '';
+    log(`httpx detection failed for ${url}: ${errorMsg}${stderrStr ? ` | stderr: ${stderrStr}` : ''} (${duration}ms)`);
 
     // Fallback to header detection if httpx fails
     const headerTechs = await detectFromHeaders(url);
