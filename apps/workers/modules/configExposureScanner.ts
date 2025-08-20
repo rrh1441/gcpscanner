@@ -237,16 +237,54 @@ export async function runConfigExposureScanner(job: {
   const exposedFiles: ConfigFile[] = [];
   let totalSecrets = 0;
   
-  // Probe all config paths
-  for (const path of CONFIG_PATHS) {
-    console.log(`[configExposureScanner] Checking path: ${path}`);
-    const result = await probeConfigFile(baseUrl, path);
-    if (result) {
-      console.log(`[configExposureScanner] Path ${path} returned status ${result.status}`);
-      exposedFiles.push(result);
-      totalSecrets += result.secrets.length;
-      log(`[configExposureScanner] Found exposed file: ${path} (${result.secrets.length} secrets)`);
-    }
+  // Add module-level timeout protection
+  const MODULE_TIMEOUT_MS = 60 * 1000; // 1 minute timeout for this module
+  const moduleTimeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('configExposureScanner timeout - exceeded 1 minute')), MODULE_TIMEOUT_MS)
+  );
+
+  try {
+    // Wrap the scanning logic with timeout protection
+    await Promise.race([
+      (async () => {
+        // Probe all config paths - but in parallel chunks to avoid hanging on one request
+        const CHUNK_SIZE = 10;
+        for (let i = 0; i < CONFIG_PATHS.length; i += CHUNK_SIZE) {
+          const chunk = CONFIG_PATHS.slice(i, i + CHUNK_SIZE);
+          console.log(`[configExposureScanner] Processing chunk ${Math.floor(i/CHUNK_SIZE) + 1}/${Math.ceil(CONFIG_PATHS.length/CHUNK_SIZE)} (${chunk.length} paths)`);
+          
+          // Process chunk in parallel with individual timeouts
+          const chunkResults = await Promise.allSettled(
+            chunk.map(async (path) => {
+              console.log(`[configExposureScanner] Checking path: ${path}`);
+              const result = await probeConfigFile(baseUrl, path);
+              if (result) {
+                console.log(`[configExposureScanner] Path ${path} returned status ${result.status}`);
+                log(`[configExposureScanner] Found exposed file: ${path} (${result.secrets.length} secrets)`);
+              }
+              return { path, result };
+            })
+          );
+          
+          // Collect successful results
+          chunkResults.forEach((settled) => {
+            if (settled.status === 'fulfilled' && settled.value.result) {
+              exposedFiles.push(settled.value.result);
+              totalSecrets += settled.value.result.secrets.length;
+            } else if (settled.status === 'rejected') {
+              console.log(`[configExposureScanner] Path check failed:`, settled.reason?.message);
+            }
+          });
+        }
+      })(),
+      moduleTimeoutPromise
+    ]);
+    
+    console.log(`[configExposureScanner] Scanning completed - found ${exposedFiles.length} files`);
+  } catch (error) {
+    console.log(`[configExposureScanner] Module timed out or failed:`, error instanceof Error ? error.message : String(error));
+    log(`[configExposureScanner] Scan failed or timed out: ${error instanceof Error ? error.message : String(error)}`);
+    // Continue to store whatever results we have
   }
   
   // Store findings

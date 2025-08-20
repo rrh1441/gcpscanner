@@ -8,14 +8,16 @@
 import {
   insertArtifact,
   insertFinding,
+  pool,
 } from '../core/artifactStore.js';
-import { logLegacy as rootLog } from '../core/logger.js';
+import { log as rootLog } from '../core/logger.js';
 import {
   detectTechnologiesWithWebTech,
   detectTechnologiesWithWhatWeb,
   detectFromHeaders,
 } from '../util/fastTechDetection.js';
 import { detectTechnologyByFavicon } from '../util/faviconDetection.js';
+import { UnifiedCache } from './techCache/index.js';
 
 // Configuration
 const CONFIG = {
@@ -27,7 +29,7 @@ const CONFIG = {
 
 type Severity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 const RISK_TO_SEVERITY: Record<'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL', Severity> = {
-  LOW: 'LOW',
+  LOW: 'INFO',
   MEDIUM: 'MEDIUM',
   HIGH: 'HIGH',
   CRITICAL: 'CRITICAL'
@@ -76,13 +78,13 @@ interface EnhancedSecAnalysis {
 
 interface ScanMetrics {
   totalTargets: number;
-  targetsScanned: number;
-  targetsFailed: number;
+  thirdPartyOrigins: number;
   uniqueTechs: number;
   supplyFindings: number;
   runMs: number;
   circuitBreakerTripped: boolean;
-  detectorsUsed: string[];
+  cacheHitRate: number;
+  dynamic_browser_skipped?: boolean;
 }
 
 // Cache removed for simplicity
@@ -106,11 +108,14 @@ function detectEcosystem(tech: TechResult): string {
   return 'unknown';
 }
 
-// REMOVED: Complex concurrency controller that was causing hangs
-// Using simple sequential approach from working Fly deployment
-
 // Simplified target discovery
-async function discoverTargets(domain: string, providedTargets?: string[]) {
+async function discoverTargets(scanId: string, domain: string, providedTargets?: string[]) {
+  // Get discovered endpoints from endpointDiscovery if available
+  const endpointQuery = await pool.query(
+    `SELECT meta FROM artifacts WHERE type = 'discovered_endpoints' AND meta->>'scan_id' = $1 LIMIT 1`,
+    [scanId]
+  );
+  
   const targets = new Set<string>();
   
   // Add primary domain targets
@@ -122,9 +127,23 @@ async function discoverTargets(domain: string, providedTargets?: string[]) {
     providedTargets.forEach(t => targets.add(t));
   }
   
+  // Add discovered endpoints if available
+  if (endpointQuery.rows.length > 0 && endpointQuery.rows[0].meta.endpoints) {
+    const endpoints = endpointQuery.rows[0].meta.endpoints;
+    endpoints.slice(0, 10).forEach((ep: any) => {
+      if (ep.url) targets.add(ep.url);
+    });
+  }
+  
   return {
     primary: Array.from(targets).slice(0, 5),
-    total: targets.size
+    thirdParty: [],
+    total: targets.size,
+    metrics: {
+      htmlCount: targets.size,
+      nonHtmlCount: 0,
+      thirdPartySkipped: false
+    }
   };
 }
 
@@ -153,52 +172,38 @@ export async function runTechStackScan(job: {
 }): Promise<number> {
   const { domain, scanId, targets: providedTargets } = job;
   const start = Date.now();
-  console.log(`[techStackScan] START ${domain} at ${new Date().toISOString()}`);
   log(`techstack=start domain=${domain}`);
 
   try {
     // 1. TARGET DISCOVERY
-    const targetResult = await discoverTargets(domain, providedTargets);
+    const targetResult = await discoverTargets(scanId, domain, providedTargets);
     const allTargets = targetResult.primary;
     
-    console.log(`[techStackScan] Target discovery complete: ${targetResult.total} targets found`);
     log(`techstack=targets total=${targetResult.total} html=${allTargets.length}`);
     
-    // 2. TECHNOLOGY DETECTION (SEQUENTIAL - FROM WORKING FLY VERSION)
+    // 2. TECHNOLOGY DETECTION
     let allDetections: TechResult[] = [];
     let circuitBreakerTripped = false;
     
-    // Process targets sequentially (like working Fly version)
     for (const url of allTargets.slice(0, 5)) {
       try {
-        console.log(`[techStackScan] Processing ${url}...`);
-        
-        // Try WebTech first
         const webtech = await detectTechnologiesWithWebTech(url);
         allDetections.push(...webtech.technologies);
-        console.log(`[techStackScan] WebTech found ${webtech.technologies.length} technologies`);
         
-        // Try WhatWeb if WebTech found nothing
         if (webtech.technologies.length === 0) {
           const whatweb = await detectTechnologiesWithWhatWeb(url);
           allDetections.push(...whatweb.technologies);
-          console.log(`[techStackScan] WhatWeb found ${whatweb.technologies.length} technologies`);
         }
         
-        // Try headers if still nothing
         if (allDetections.length === 0) {
           const headers = await detectFromHeaders(url);
           allDetections.push(...headers);
-          console.log(`[techStackScan] Headers found ${headers.length} technologies`);
         }
 
-        // Always try favicon (it's fast and adds value)
         const favicon = await detectTechnologyByFavicon(url);
         if (favicon.length > 0) {
           allDetections.push(...favicon);
-          console.log(`[techStackScan] Favicon found ${favicon.length} technologies`);
         }
-        
       } catch (err) {
         log(`Error detecting tech for ${url}:`, (err as Error).message);
       }
@@ -211,16 +216,13 @@ export async function runTechStackScan(job: {
       }
     }
     
-    console.log(`[techStackScan] Technology detection phase complete: ${techMap.size} unique technologies identified`);
     log(`techstack=tech_detection_complete techs=${techMap.size}`);
     
     // 3. SECURITY ANALYSIS
-    console.log(`[techStackScan] Starting vulnerability enrichment for ${techMap.size} technologies...`);
     const analysisMap = new Map<string, EnhancedSecAnalysis>();
     for (const [slug, tech] of techMap) {
       analysisMap.set(slug, await analyzeSecurityEnhanced(tech));
     }
-    console.log(`[techStackScan] Vulnerability enrichment complete`);
     
     // 4. ARTIFACT GENERATION
     let artCount = 0;
@@ -304,18 +306,17 @@ export async function runTechStackScan(job: {
       }
     });
 
-    // 5. METRICS AND SUMMARY (SIMPLIFIED)
+    // 5. METRICS AND SUMMARY
     const runMs = Date.now() - start;
-    
     const metrics: ScanMetrics = {
       totalTargets: targetResult.total,
-      targetsScanned: allTargets.length,
-      targetsFailed: 0, // Sequential processing doesn't track individual failures
+      thirdPartyOrigins: 0,
       uniqueTechs: techMap.size,
       supplyFindings,
       runMs,
       circuitBreakerTripped,
-      detectorsUsed: ['webtech', 'whatweb', 'headers', 'favicon'] // All detectors attempted
+      cacheHitRate: 0,
+      dynamic_browser_skipped: false
     };
 
     await insertArtifact({
@@ -330,13 +331,10 @@ export async function runTechStackScan(job: {
       }
     });
     
-    console.log(`[techStackScan] COMPLETE in ${runMs}ms with ${techMap.size} technologies`);
     log(`techstack=complete domain=${domain} artifacts=${artCount} runtime=${runMs}ms`);
     return artCount;
 
   } catch (error) {
-    console.log(`[techStackScan] ERROR: ${(error as Error).message}`);
-    console.log(`[techStackScan] Stack trace:`, (error as Error).stack);
     log(`techstack=error domain=${domain} error="${(error as Error).message}"`);
     await insertArtifact({
       type: 'scan_error',

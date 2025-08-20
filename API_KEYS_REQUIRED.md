@@ -30,7 +30,7 @@ export OPENAI_API_KEY="sk-1234567890abcdefghijklmnopqrstuvwxyzABCDEFGH"
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
 
 # Google AI (Alternative)
-export GOOGLE_AI_API_KEY="AIzaSyBdVl-cTICSwYKrZ95SuvNw7dbMuDt1KG0"
+export GOOGLE_AI_API_KEY="AIzaSyYOUR_GOOGLE_AI_API_KEY_HERE"
 ```
 
 ## 🔍 **Security Scanning APIs** (High Priority)

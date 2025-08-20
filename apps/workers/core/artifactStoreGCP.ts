@@ -1,6 +1,12 @@
 import { Firestore } from '@google-cloud/firestore';
 
-const firestore = new Firestore();
+const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || 'precise-victory-467219-s4';
+
+const firestore = new Firestore({
+  projectId: PROJECT_ID
+});
+
+console.log(`[artifactStoreGCP] Initialized Firestore with project: ${PROJECT_ID}`);
 
 // Recursively sanitize undefined values to prevent Firestore errors
 function deepSanitizeUndefined(obj: any): any {
@@ -86,17 +92,31 @@ async function insertArtifactInternal(artifact: ArtifactInput): Promise<number> 
     // Recursively sanitize undefined values to null for Firestore compatibility
     const sanitizedArtifact: any = deepSanitizeUndefined({ ...artifact });
     
+    console.log('[Firestore] Inserting artifact:', {
+      type: sanitizedArtifact.type,
+      severity: sanitizedArtifact.severity,
+      scan_id: artifact.meta?.scan_id || 'unknown'
+    });
+    
     const docRef = await firestore.collection('artifacts').add({
       ...sanitizedArtifact,
       created_at: new Date().toISOString(),
       scan_id: artifact.meta?.scan_id || 'unknown'
     });
     
+    console.log(`[Firestore] Successfully inserted artifact: ${docRef.id}`);
+    
     // Return a fake ID for compatibility
     return Date.now();
-  } catch (error) {
-    console.error('Failed to insert artifact:', error);
-    throw error;
+  } catch (error: any) {
+    console.error('[Firestore] Failed to insert artifact:', {
+      error: error.message,
+      code: error.code,
+      details: error.details,
+      artifact_type: artifact?.type
+    });
+    // Don't throw - log and continue to prevent scan failure
+    return -1;
   }
 }
 
@@ -124,12 +144,30 @@ export async function insertFinding(
 ): Promise<number> {
   // Handle legacy 4 or 5 parameter calls
   if (typeof findingOrArtifactId === 'number' && findingType) {
+    // Fetch the artifact to get scan_id and other metadata
+    let artifactScanId = null;
+    let artifactSeverity = 'MEDIUM'; // default
+    
+    try {
+      const artifactDoc = await firestore.collection('artifacts').doc(findingOrArtifactId.toString()).get();
+      if (artifactDoc.exists) {
+        const artifactData = artifactDoc.data();
+        artifactScanId = artifactData?.meta?.scan_id || artifactData?.scan_id;
+        artifactSeverity = artifactData?.severity || 'MEDIUM';
+      }
+    } catch (error) {
+      console.error('[Firestore] Failed to fetch artifact for finding:', error);
+    }
+    
     const finding = {
       artifact_id: findingOrArtifactId,
       finding_type: findingType,
       recommendation: recommendation || '',
       description: description || '',
-      repro_command: reproCommand || null
+      repro_command: reproCommand || null,
+      scan_id: artifactScanId, // Inherit from artifact
+      severity: artifactSeverity,
+      type: findingType
     };
     return insertFindingInternal(finding);
   }
@@ -143,16 +181,30 @@ async function insertFindingInternal(finding: any): Promise<number> {
     // Recursively sanitize undefined values to null for Firestore compatibility
     const sanitizedFinding: any = deepSanitizeUndefined({ ...finding });
     
+    console.log('[Firestore] Inserting finding:', {
+      type: sanitizedFinding.type,
+      severity: sanitizedFinding.severity,
+      scan_id: sanitizedFinding.scan_id
+    });
+    
     const docRef = await firestore.collection('findings').add({
       ...sanitizedFinding,
       created_at: new Date().toISOString()
     });
     
+    console.log(`[Firestore] Successfully inserted finding: ${docRef.id}`);
+    
     // Return a fake ID for compatibility
     return Date.now();
-  } catch (error) {
-    console.error('Failed to insert finding:', error);
-    throw error;
+  } catch (error: any) {
+    console.error('[Firestore] Failed to insert finding:', {
+      error: error.message,
+      code: error.code,
+      details: error.details,
+      finding_type: finding?.type
+    });
+    // Don't throw - log and continue to prevent scan failure
+    return -1;
   }
 }
 

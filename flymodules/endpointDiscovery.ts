@@ -10,30 +10,22 @@
  * =============================================================================
  */
 
-import { httpRequest, httpGetText } from '../net/httpClient.js';
-import { parse as parseHTML } from 'node-html-parser';
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { parse } from 'node-html-parser';
 import { insertArtifact } from '../core/artifactStore.js';
-import { logLegacy as log } from '../core/logger.js';
+import { log } from '../core/logger.js';
 import { URL } from 'node:url';
 import * as https from 'node:https';
-import { parse as parseJS } from 'acorn';
-import { simple } from 'acorn-walk';
 
 // ---------- Configuration ----------------------------------------------------
 
-const MAX_CRAWL_DEPTH = 1; // Reduced from 2 to prevent excessive crawling
+const MAX_CRAWL_DEPTH = 2;
 const MAX_CONCURRENT_REQUESTS = 5;
-const REQUEST_TIMEOUT = 10_000;
+const REQUEST_TIMEOUT = 8_000;
 const DELAY_BETWEEN_CHUNKS_MS = 500;
 const MAX_JS_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1 MB
 const VIS_PROBE_CONCURRENCY = 5;
 const VIS_PROBE_TIMEOUT = 10_000;
-
-// Anti-infinite operation protection - MUCH more aggressive limits
-const MAX_TOTAL_OPERATIONS = 500; // Reduced from 5000 to 500
-const MAX_OPERATION_TIME_MS = 30 * 1000; // Reduced from 2 minutes to 30 seconds
-let operationCount = 0;
-let scanStartTime = 0;
 
 const ENDPOINT_WORDLIST = [
   'api',
@@ -106,31 +98,6 @@ const USER_AGENTS = [
 const VERBS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 const HTTPS_AGENT = new https.Agent({ rejectUnauthorized: true });
 
-// Backend identifier detection patterns
-const RX = {
-  firebaseHost  : /([a-z0-9-]{6,})\.(?:firebaseio\.com|(?:[a-z0-9-]+\.)?firebasedatabase\.app)/i,
-  firebasePID   : /projectId["']\s*:\s*["']([a-z0-9-]{6,})["']/i,
-
-  s3Host        : /([a-z0-9.\-]{3,63})\.s3[\.\-][a-z0-9\-\.]*\.amazonaws\.com/i,
-  s3Path        : /s3[\.\-]amazonaws\.com\/([a-z0-9.\-]{3,63})/i,
-  s3CompatHost  : /([a-z0-9.\-]{3,63})\.(?:r2\.cloudflarestorage\.com|digitaloceanspaces\.com|s3\.wasabisys\.com|s3\.[a-z0-9\-\.]*\.backblazeb2\.com)/i,
-  bucketAssign  : /bucket["']\s*[:=]\s*["']([a-z0-9.\-]{3,63})["']/i,
-
-  azureHost     : /([a-z0-9]{3,24})\.(?:blob|table|file)\.core\.windows\.net/i,
-  azureAcct     : /storageAccount["']\s*[:=]\s*["']([a-z0-9]{3,24})["']/i,
-  azureSAS      : /sv=\d{4}-\d{2}-\d{2}&ss=[bqtf]+&srt=[a-z]+&sp=[a-z]+&sig=[A-Za-z0-9%]+/i,
-
-  gcsHost       : /storage\.googleapis\.com\/([a-z0-9.\-_]+)/i,
-  gcsGs         : /gs:\/\/([a-z0-9.\-_]+)/i,
-  gcsPath       : /\/b\/([a-z0-9.\-_]+)\/o/i,
-
-  supabaseHost  : /https:\/\/([a-z0-9-]+)\.supabase\.(?:co|com)/i,
-
-  realmHost     : /https:\/\/([a-z0-9-]+)\.realm\.mongodb\.com/i,
-
-  connString    : /((?:postgres|mysql|mongodb|redis|mssql):\/\/[^ \n\r'"`]+@[^\s'":\/\[\]]+(?::\d+)?\/[^\s'"]+)/i
-} as const;
-
 // ---------- Types ------------------------------------------------------------
 
 interface DiscoveredEndpoint {
@@ -173,34 +140,18 @@ interface EndpointReport {
   notes: string[];
 }
 
-export interface BackendIdentifier {
-  provider:
-    | 'firebase' | 's3' | 'gcs' | 'azure' | 'supabase'
-    | 'r2' | 'spaces' | 'b2' | 'realm';
-  id : string;                        // bucket / project / account
-  raw: string;                        // original match
-  src: { file: string; line: number } // traceability
-}
-
 // ---------- Endpoint Visibility Checking ------------------------------------
 
-async function safeVisibilityRequest(method: string, target: string): Promise<any | null> {
+async function safeVisibilityRequest(method: string, target: string): Promise<AxiosResponse | null> {
   try {
-    const response = await httpRequest({
+    return await axios.request({
       url: target,
       method: method as any,
-      totalTimeoutMs: VIS_PROBE_TIMEOUT,
-      connectTimeoutMs: 3000,
-      firstByteTimeoutMs: 5000,
-      idleSocketTimeoutMs: 5000,
-      forceIPv4: true,
+      timeout: VIS_PROBE_TIMEOUT,
+      httpsAgent: HTTPS_AGENT,
       maxRedirects: 5,
+      validateStatus: () => true
     });
-    return {
-      status: response.status,
-      data: new TextDecoder('utf-8').decode(response.body),
-      headers: response.headers
-    };
   } catch {
     return null;
   }
@@ -270,31 +221,17 @@ async function checkEndpoint(urlStr: string): Promise<EndpointReport> {
 
 const discovered = new Map<string, DiscoveredEndpoint>();
 const webAssets = new Map<string, WebAsset>();
-const backendIdSet = new Map<string, BackendIdentifier>();
 
 const getRandomUA = (): string =>
   USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
 const safeRequest = async (
   url: string,
-  cfg: any = {}
+  cfg: AxiosRequestConfig
 ): Promise<SafeResult> => {
   try {
-    const res = await httpRequest({
-      url,
-      method: cfg.method || 'GET',
-      headers: cfg.headers || { 'User-Agent': getRandomUA() },
-      totalTimeoutMs: cfg.timeout || REQUEST_TIMEOUT,
-      connectTimeoutMs: 3000,
-      firstByteTimeoutMs: 5000,
-      idleSocketTimeoutMs: 5000,
-      forceIPv4: true,
-      maxRedirects: cfg.maxRedirects || 5,
-      maxBodyBytes: cfg.responseType === 'arraybuffer' ? 10_000_000 : 5_000_000,
-    });
-    const data = cfg.responseType === 'arraybuffer' ? 
-      res.body : new TextDecoder('utf-8').decode(res.body);
-    return { ok: true, status: res.status, data };
+    const res: AxiosResponse = await axios({ url, ...cfg });
+    return { ok: true, status: res.status, data: res.data };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown network error';
     return { ok: false, error: message };
@@ -311,44 +248,10 @@ const addEndpoint = (
   log(`[endpointDiscovery] +${ep.source} ${ep.path} (${ep.statusCode ?? '-'})`);
 };
 
-// Memory limits to prevent exhaustion
-const MAX_WEB_ASSETS = 1000; // Maximum number of web assets to collect
-const MAX_ASSET_SIZE = 2 * 1024 * 1024; // 2MB per asset
-const MAX_TOTAL_ASSET_SIZE = 100 * 1024 * 1024; // 100MB total asset content
-
-let totalAssetSize = 0;
-
-function recordBackend(id: BackendIdentifier): void {
-  const key = `${id.provider}:${id.id}`;
-  if (!backendIdSet.has(key)) {
-    backendIdSet.set(key, id);
-    log(`[endpointDiscovery] +backend ${id.provider}:${id.id} from ${id.src.file}:${id.src.line}`);
-  }
-}
-
 const addWebAsset = (asset: WebAsset): void => {
   if (webAssets.has(asset.url)) return;
-  
-  // Check memory limits
-  if (webAssets.size >= MAX_WEB_ASSETS) {
-    log(`[endpointDiscovery] Asset limit reached (${MAX_WEB_ASSETS}), skipping: ${asset.url}`);
-    return;
-  }
-  
-  const assetSize = asset.content?.length || asset.size || 0;
-  if (assetSize > MAX_ASSET_SIZE) {
-    log(`[endpointDiscovery] Asset too large (${assetSize} bytes), skipping: ${asset.url}`);
-    return;
-  }
-  
-  if (totalAssetSize + assetSize > MAX_TOTAL_ASSET_SIZE) {
-    log(`[endpointDiscovery] Total asset size limit reached, skipping: ${asset.url}`);
-    return;
-  }
-  
-  totalAssetSize += assetSize;
   webAssets.set(asset.url, asset);
-  log(`[endpointDiscovery] +web_asset ${asset.type} ${asset.url} (${assetSize} bytes, ${Math.round(totalAssetSize/1024/1024)}MB total)`);
+  log(`[endpointDiscovery] +web_asset ${asset.type} ${asset.url} (${asset.size ?? '?'} bytes)`);
 };
 
 const getAssetType = (url: string, mimeType?: string): WebAsset['type'] => {
@@ -359,46 +262,6 @@ const getAssetType = (url: string, mimeType?: string): WebAsset['type'] => {
   if (url.endsWith('.html') || url.endsWith('.htm') || mimeType?.includes('html')) return 'html';
   return 'other';
 };
-
-// ---------- Backend Identifier Extraction -----------------------------------
-
-function extractViaRegex(source: string, file: string): void {
-  const lines = source.split('\n');
-
-  function m(rx: RegExp, prov: BackendIdentifier['provider']) {
-    let match: RegExpExecArray | null;
-    rx.lastIndex = 0;                                  // safety
-    while ((match = rx.exec(source))) {
-      const idx  = match.index;
-      const lnum = source.slice(0, idx).split('\n').length;
-      recordBackend({ provider: prov, id: match[1], raw: match[0],
-                      src: { file, line: lnum } });
-    }
-  }
-
-  m(RX.firebaseHost , 'firebase');  m(RX.firebasePID , 'firebase');
-  m(RX.s3Host       , 's3');        m(RX.s3Path      , 's3');
-  m(RX.s3CompatHost , 's3');        m(RX.bucketAssign, 's3');
-  m(RX.azureHost    , 'azure');     m(RX.azureAcct   , 'azure');
-  m(RX.gcsHost      , 'gcs');       m(RX.gcsGs       , 'gcs'); m(RX.gcsPath, 'gcs');
-  m(RX.supabaseHost , 'supabase');
-  m(RX.realmHost    , 'realm');
-  m(RX.connString   , 's3');   // generic DB strings → handled later
-}
-
-function extractViaAST(source: string, file: string): void {
-  let ast;
-  try { ast = parseJS(source, { ecmaVersion: 'latest' }); }
-  catch { return; }
-
-  simple(ast as any, {
-    Literal(node: any) {
-      if (typeof node.value !== 'string') return;
-      const v = node.value as string;
-      extractViaRegex(v, file);                // reuse regex on literals
-    }
-  });
-}
 
 // ---------- Passive Discovery ------------------------------------------------
 
@@ -435,7 +298,7 @@ const parseSitemap = async (sitemapUrl: string, baseUrl: string): Promise<void> 
   });
   if (!res.ok || typeof res.data !== 'string') return;
 
-  const root = parseHTML(res.data);
+  const root = parse(res.data);
   const locElems = root.querySelectorAll('loc');
   for (const el of locElems) {
     try {
@@ -472,10 +335,6 @@ const analyzeJsFile = async (jsUrl: string, baseUrl: string): Promise<void> => {
     content: res.data.length > 50000 ? res.data.substring(0, 50000) + '...[truncated]' : res.data,
     mimeType: 'application/javascript'
   });
-
-  // Extract backend identifiers from JavaScript
-  extractViaRegex(res.data, jsUrl);
-  extractViaAST(res.data, jsUrl);
 
   // Hunt for corresponding source map
   await huntSourceMap(jsUrl, baseUrl);
@@ -540,40 +399,15 @@ const crawlPage = async (
   baseUrl: string,
   seen: Set<string>
 ): Promise<void> => {
-  // Circuit breaker: prevent infinite operations
-  operationCount++;
-  if (operationCount > MAX_TOTAL_OPERATIONS) {
-    log(`[endpointDiscovery] Operation limit reached (${MAX_TOTAL_OPERATIONS}), stopping crawl`);
-    return;
-  }
-  
-  if (scanStartTime > 0 && Date.now() - scanStartTime > MAX_OPERATION_TIME_MS) {
-    log(`[endpointDiscovery] Time limit reached (${MAX_OPERATION_TIME_MS}ms), stopping crawl`);
-    return;
-  }
-  
   if (depth > MAX_CRAWL_DEPTH || seen.has(url)) return;
   seen.add(url);
 
-  // Add detailed logging for debugging
-  console.log(`[endpointDiscovery:crawlPage] Starting request to ${url} at depth ${depth}`)
-  log(`[endpointDiscovery:crawlPage] Starting request to ${url} at depth ${depth}`);
-  
-  const requestStart = Date.now();
   const res = await safeRequest(url, {
     timeout: REQUEST_TIMEOUT,
     headers: { 'User-Agent': getRandomUA() },
     validateStatus: () => true
   });
-  
-  const requestTime = Date.now() - requestStart;
-  console.log(`[endpointDiscovery:crawlPage] Request to ${url} completed in ${requestTime}ms`);
-  log(`[endpointDiscovery:crawlPage] Request to ${url} completed in ${requestTime}ms`);
-  
-  if (!res.ok || typeof res.data !== 'string') {
-    log(`[endpointDiscovery:crawlPage] Request failed or invalid response for ${url}`);
-    return;
-  }
+  if (!res.ok || typeof res.data !== 'string') return;
 
   // Save HTML content as web asset for secret scanning
   const contentType = typeof res.data === 'object' && res.data && 'headers' in res.data ? 
@@ -588,10 +422,7 @@ const crawlPage = async (
     mimeType: contentType
   });
 
-  // Extract backend identifiers from HTML content
-  extractViaRegex(res.data, url);
-
-  const root = parseHTML(res.data);
+  const root = parse(res.data);
   const pageLinks = new Set<string>();
 
   root.querySelectorAll('a[href]').forEach((a) => {
@@ -635,9 +466,8 @@ const crawlPage = async (
   root.querySelectorAll('script:not([src])').forEach((script, index) => {
     const content = script.innerHTML;
     if (content.length > 100) { // Only save substantial inline scripts
-      const inlineUrl = `${url}#inline-script-${index}`;
       addWebAsset({
-        url: inlineUrl,
+        url: `${url}#inline-script-${index}`,
         type: 'javascript',
         size: content.length,
         confidence: 'high',
@@ -645,61 +475,11 @@ const crawlPage = async (
         content: content.length > 10000 ? content.substring(0, 10000) + '...[truncated]' : content,
         mimeType: 'application/javascript'
       });
-      // Extract backend identifiers from inline scripts
-      extractViaRegex(content, inlineUrl);
-      extractViaAST(content, inlineUrl);
     }
   });
 
-  // Process links in parallel batches to avoid sequential blocking
-  const linkArray = Array.from(pageLinks);
-  const BATCH_SIZE = 5;
-  const MAX_PAGES_PER_CRAWL = 10; // Reduced from 50 to 10 to prevent excessive crawling
-  
-  // Stop if we've already crawled too many pages
-  if (seen.size >= MAX_PAGES_PER_CRAWL) {
-    log(`[endpointDiscovery] Reached max pages limit (${MAX_PAGES_PER_CRAWL}), stopping crawl`);
-    return;
-  }
-  
-  // Process links in batches with better error handling and aggressive timeouts
-  console.log(`[endpointDiscovery:crawlPage] Processing ${linkArray.length} links in batches, current seen: ${seen.size}/${MAX_PAGES_PER_CRAWL}`);
-  
-  for (let i = 0; i < linkArray.length && seen.size < MAX_PAGES_PER_CRAWL; i += BATCH_SIZE) {
-    const batch = linkArray.slice(i, Math.min(i + BATCH_SIZE, linkArray.length));
-    console.log(`[endpointDiscovery:crawlPage] Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(linkArray.length/BATCH_SIZE)} with ${batch.length} links`);
-    
-    const batchStart = Date.now();
-    try {
-      // Add aggressive timeout to each batch
-      await Promise.race([
-        Promise.allSettled(
-          batch.map(link => 
-            crawlPage(link, depth + 1, baseUrl, seen).catch(err => {
-              console.error(`[endpointDiscovery:crawlPage] Error crawling ${link}: ${err.message}`);
-              log(`[endpointDiscovery:crawlPage] Error crawling ${link}: ${err.message}`);
-            })
-          )
-        ),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error(`Batch timeout after 5s`)), 5000)
-        )
-      ]);
-      
-      const batchTime = Date.now() - batchStart;
-      console.log(`[endpointDiscovery:crawlPage] Batch ${Math.floor(i/BATCH_SIZE) + 1} completed in ${batchTime}ms, total seen: ${seen.size}`);
-      
-      // Check operation limits more frequently
-      if (operationCount > MAX_TOTAL_OPERATIONS) {
-        console.log(`[endpointDiscovery:crawlPage] Operation limit reached during batch processing`);
-        break;
-      }
-      
-    } catch (error) {
-      console.log(`[endpointDiscovery:crawlPage] Batch ${Math.floor(i/BATCH_SIZE) + 1} timed out or failed: ${error instanceof Error ? error.message : String(error)}`);
-      log(`[endpointDiscovery:crawlPage] Batch timeout or failure: ${error instanceof Error ? error.message : String(error)}`);
-      break; // Stop processing if a batch times out
-    }
+  for (const link of pageLinks) {
+    await crawlPage(link, depth + 1, baseUrl, seen);
   }
 };
 
@@ -727,12 +507,6 @@ const analyzeCssFile = async (cssUrl: string, baseUrl: string): Promise<void> =>
 // ---------- Brute-Force / Auth Probe -----------------------------------------
 
 const bruteForce = async (baseUrl: string): Promise<void> => {
-  // Circuit breaker: check operation limits
-  if (operationCount > MAX_TOTAL_OPERATIONS * 0.8) { // Reserve 20% for other operations
-    log(`[endpointDiscovery] Skipping brute force - operation limit approaching`);
-    return;
-  }
-  
   const tasks = ENDPOINT_WORDLIST.flatMap((word) => {
     const path = `/${word}`;
     const uaHeader = { 'User-Agent': getRandomUA() };
@@ -812,8 +586,6 @@ async function enrichVisibility(endpoints: DiscoveredEndpoint[]): Promise<void> 
 // Target high-value paths that might contain secrets
 const probeHighValuePaths = async (baseUrl: string): Promise<void> => {
   const highValuePaths = [
-    '/',  // Index page
-    '/index.html',  // Explicit index
     '/.env',
     '/config.json',
     '/app.config.json',
@@ -867,104 +639,25 @@ const probeHighValuePaths = async (baseUrl: string): Promise<void> => {
 // ---------- Main Export ------------------------------------------------------
 
 export async function runEndpointDiscovery(job: { domain: string; scanId?: string }): Promise<number> {
-  console.log(`[endpointDiscovery] ⇢ START ${job.domain} at ${new Date().toISOString()}`);
-  const start = Date.now();
   log(`[endpointDiscovery] ⇢ start ${job.domain}`);
   const baseUrl = `https://${job.domain}`;
-  console.log(`[endpointDiscovery] baseUrl: ${baseUrl}`);
-  log(`[endpointDiscovery] baseUrl: ${baseUrl}`);
-  
-  // Initialize anti-infinite operation protection
-  operationCount = 0;
-  scanStartTime = Date.now();
-  log(`[endpointDiscovery] Initialized - operationCount: 0, scanStartTime: ${scanStartTime}`);
-  
   discovered.clear();
   webAssets.clear();
-  backendIdSet.clear();
-  totalAssetSize = 0; // Reset memory usage counter
-  log(`[endpointDiscovery] Cleared all collections`);
 
-  // Existing discovery methods with timeout protection
-  console.log(`[endpointDiscovery] Starting parseRobotsTxt at ${new Date().toISOString()}...`);
-  log(`[endpointDiscovery] Starting parseRobotsTxt...`);
-  try {
-    await Promise.race([
-      parseRobotsTxt(baseUrl),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('parseRobotsTxt timeout')), 30000))
-    ]);
-    console.log(`[endpointDiscovery] parseRobotsTxt completed successfully at ${new Date().toISOString()}`);
-    log(`[endpointDiscovery] parseRobotsTxt completed successfully`);
-  } catch (e) {
-    log(`[endpointDiscovery] parseRobotsTxt failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  console.log(`[endpointDiscovery] Starting parseSitemap at ${new Date().toISOString()}...`);
-  log(`[endpointDiscovery] Starting parseSitemap...`);
-  try {
-    await Promise.race([
-      parseSitemap(`${baseUrl}/sitemap.xml`, baseUrl),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('parseSitemap timeout')), 30000))
-    ]);
-    console.log(`[endpointDiscovery] parseSitemap completed successfully at ${new Date().toISOString()}`);
-    log(`[endpointDiscovery] parseSitemap completed successfully`);
-  } catch (e) {
-    log(`[endpointDiscovery] parseSitemap failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  console.log(`[endpointDiscovery] Starting crawlPage at ${new Date().toISOString()}...`);
-  log(`[endpointDiscovery] Starting crawlPage...`);
-  try {
-    await Promise.race([
-      crawlPage(baseUrl, 1, baseUrl, new Set<string>()),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('crawlPage timeout')), 15000)) // Reduced from 60s to 15s
-    ]);
-    console.log(`[endpointDiscovery] crawlPage completed successfully at ${new Date().toISOString()}`);
-    log(`[endpointDiscovery] crawlPage completed successfully`);
-  } catch (e) {
-    log(`[endpointDiscovery] crawlPage failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  
-  console.log(`[endpointDiscovery] crawlPage returned, discovered ${discovered.size} endpoints so far`);
-
-  console.log(`[endpointDiscovery] Starting bruteForce enumeration...`);
-  log(`[endpointDiscovery] Starting bruteForce...`);
-  try {
-    await Promise.race([
-      bruteForce(baseUrl),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('bruteForce timeout')), 5000)) // Further reduced to 5s
-    ]);
-    console.log(`[endpointDiscovery] bruteForce complete, total endpoints: ${discovered.size}`);
-    log(`[endpointDiscovery] bruteForce completed successfully`);
-  } catch (e) {
-    console.log(`[endpointDiscovery] bruteForce failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
-    log(`[endpointDiscovery] bruteForce failed or timed out: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  // Existing discovery methods
+  await parseRobotsTxt(baseUrl);
+  await parseSitemap(`${baseUrl}/sitemap.xml`, baseUrl);
+  await crawlPage(baseUrl, 1, baseUrl, new Set<string>());
+  await bruteForce(baseUrl);
   
   // New: Probe high-value paths for secrets
-  log(`[endpointDiscovery] Starting probeHighValuePaths...`);
-  try {
-    await probeHighValuePaths(baseUrl);
-    log(`[endpointDiscovery] probeHighValuePaths completed successfully`);
-  } catch (e) {
-    log(`[endpointDiscovery] probeHighValuePaths failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  await probeHighValuePaths(baseUrl);
 
   const endpoints = [...discovered.values()];
   const assets = [...webAssets.values()];
-  const backendArr = [...backendIdSet.values()];
-  log(`[endpointDiscovery] Collected ${endpoints.length} endpoints, ${assets.length} assets, ${backendArr.length} backends`);
 
   /* ------- Visibility enrichment (public/static vs. auth) ---------------- */
-  console.log(`[endpointDiscovery] Starting visibility check for ${discovered.size} endpoints...`);
-  log(`[endpointDiscovery] Starting enrichVisibility...`);
-  try {
-    await enrichVisibility(endpoints);
-    console.log(`[endpointDiscovery] Visibility check complete`);
-    log(`[endpointDiscovery] enrichVisibility completed successfully`);
-  } catch (e) {
-    log(`[endpointDiscovery] enrichVisibility failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  await enrichVisibility(endpoints);
 
   // Save discovered endpoints
   if (endpoints.length) {
@@ -1002,22 +695,7 @@ export async function runEndpointDiscovery(job: { domain: string; scanId?: strin
     });
   }
 
-  // Save discovered backend identifiers
-  if (backendArr.length) {
-    await insertArtifact({
-      type: 'backend_identifiers',
-      severity: 'INFO',
-      val_text: `Identified ${backendArr.length} backend IDs on ${job.domain}`,
-      meta: { 
-        scan_id: job.scanId,
-        scan_module: 'endpointDiscovery',
-        backendArr 
-      }
-    });
-  }
-
-  console.log(`[endpointDiscovery] COMPLETE: Returning ${discovered.size} endpoints in ${Date.now() - start}ms`);
-  log(`[endpointDiscovery] ⇢ done – ${endpoints.length} endpoints, ${assets.length} web assets, ${backendArr.length} backend IDs`);
+  log(`[endpointDiscovery] ⇢ done – ${endpoints.length} endpoints, ${assets.length} web assets`);
   // Return 0 as this module doesn't create findings, only artifacts
   return 0;
 }

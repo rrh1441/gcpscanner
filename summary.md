@@ -16,6 +16,7 @@ curl -X POST https://scanner-service-242181373909.us-central1.run.app/tasks/scan
 - **Payload:** `{"scan_id":"comprehensive-test-1755536814","domain":"vulnerable-test-site.vercel.app"}`
 - **Result:** Timeout after 120 seconds
 
+
 ### Scan #2: example.com
 ```bash
 curl -X POST https://scanner-service-242181373909.us-central1.run.app/tasks/scan \

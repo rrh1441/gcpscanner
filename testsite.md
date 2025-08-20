@@ -56,8 +56,8 @@ This section contains the contents of the repository's files.
 {
   "database": {
     "supabase_url": "https://ltiuuauafphpwewqktdv.supabase.co",
-    "supabase_anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0aXV1YXVhZnBocHdld3FrdGR2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzYzNjU0NjcsImV4cCI6MjA1MTk0MTQ2N30.Qg5k6B0_jvGqZJJOOTvZCIgqLBHvJJVyMrOzQdMjhHs",
-    "supabase_service_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0aXV1YXVhZnBocHdld3FrdGR2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczNjM2NTQ2NywiZXhwIjoyMDUxOTQxNDY3fQ.bZNdRQzTfgJGhg7iV4OjKpP_5fzJ3lXlKGmkqFqS4rQ",
+    "supabase_anon_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.YOUR_ANON_KEY_HERE",
+    "supabase_service_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.YOUR_SERVICE_KEY_HERE",
     "postgres_host": "aws-0-us-east-1.pooler.supabase.com",
     "postgres_port": 5432,
     "postgres_db": "postgres",

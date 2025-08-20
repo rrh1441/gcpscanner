@@ -241,24 +241,35 @@ export async function processScan(job: ScanJob) {
         3 * 60 * 1000, scanId);
     }
     
-    // Wait for all modules with graceful degradation
-    let completedModules = 0;
-    const totalModules = Object.keys(parallelModules).length;
+    // Wait for all modules with graceful degradation using Promise.allSettled
+    const modulePromises = Object.entries(parallelModules);
+    const totalModules = modulePromises.length;
     
-    for (const [moduleName, promise] of Object.entries(parallelModules)) {
-      try {
-        const results = await promise;
+    log(`[SCAN_PROGRESS] Starting ${totalModules} modules in parallel - scan_id=${scanId}`);
+    
+    const results = await Promise.allSettled(modulePromises.map(([name, promise]) => 
+      promise.then(result => ({ name, result }))
+        .catch(error => ({ name, error: error.message }))
+    ));
+    
+    let completedModules = 0;
+    for (const [index, result] of results.entries()) {
+      const moduleName = modulePromises[index][0];
+      
+      if (result.status === 'fulfilled' && !result.value.error) {
         completedModules++;
-        totalFindings += results;
-        log(`[SCAN_PROGRESS] ${completedModules}/${totalModules} modules completed - ${moduleName} found ${results} findings - scan_id=${scanId}`);
-      } catch (error) {
+        const findings = result.value.result;
+        totalFindings += findings;
+        log(`[SCAN_PROGRESS] ${completedModules}/${totalModules} modules completed - ${moduleName} found ${findings} findings - scan_id=${scanId}`);
+      } else {
         completedModules++;
-        log(`[${moduleName}] FAILED - ${(error as Error).message} - CONTINUING SCAN - scan_id=${scanId}`);
+        const errorMsg = result.status === 'rejected' ? result.reason : result.value.error;
+        log(`[${moduleName}] FAILED - ${errorMsg} - CONTINUING SCAN - scan_id=${scanId}`);
         log(`[SCAN_PROGRESS] ${completedModules}/${totalModules} modules completed - ${moduleName} FAILED but scan continues - scan_id=${scanId}`);
         
         await insertArtifact({
           type: 'scan_error',
-          val_text: `Module ${moduleName} failed: ${(error as Error).message}`,
+          val_text: `Module ${moduleName} failed: ${errorMsg}`,
           severity: 'MEDIUM',
           meta: { scan_id: scanId, module: moduleName }
         });

@@ -2,6 +2,21 @@ import Fastify from 'fastify';
 import { executeScan, ScanJob } from './scan/executeScan.js';
 import { CloudTasksClient } from '@google-cloud/tasks';
 import * as crypto from 'node:crypto';
+import { Firestore } from '@google-cloud/firestore';
+import { Storage } from '@google-cloud/storage';
+import handlebars from 'handlebars';
+import puppeteer from 'puppeteer';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+// Initialize services
+const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || 'precise-victory-467219-s4';
+const GCS_BUCKET = `${PROJECT_ID}-scan-artifacts`;
+const firestore = new Firestore({ projectId: PROJECT_ID });
+const storage = new Storage({ projectId: PROJECT_ID });
+
+console.log(`[server] Firestore initialized with project: ${PROJECT_ID}`);
+console.log(`[server] GCS bucket: ${GCS_BUCKET}`);
 
 type PubSubMessage = {
   message?: { data?: string };
@@ -67,6 +82,49 @@ async function enqueueScanTask(job: ScanJob): Promise<void> {
     } else {
       throw err;
     }
+  }
+}
+
+// Handlebars helpers
+handlebars.registerHelper('toLowerCase', (str: string) => str.toLowerCase());
+handlebars.registerHelper('eq', (a: any, b: any) => a === b);
+
+// Report generation functions
+async function loadTemplate(): Promise<handlebars.TemplateDelegate> {
+  try {
+    const templatePath = join(process.cwd(), 'apps', 'workers', 'templates', 'report.hbs');
+    const templateContent = await readFile(templatePath, 'utf-8');
+    return handlebars.compile(templateContent);
+  } catch (error) {
+    console.error('[Report] Failed to load template:', error);
+    throw new Error('Report template not found');
+  }
+}
+
+async function generatePDF(html: string): Promise<Uint8Array> {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+  });
+  
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    
+    const pdf = await page.pdf({
+      format: 'Letter', // US Letter (8.5" x 11")
+      margin: {
+        top: '20px',
+        bottom: '20px',
+        left: '20px',
+        right: '20px'
+      },
+      printBackground: true
+    });
+    
+    return pdf;
+  } finally {
+    await browser.close();
   }
 }
 
@@ -215,8 +273,54 @@ export function buildServer() {
         modules_completed: Object.keys(result.results).length
       });
 
-      // TODO: persist result to Firestore/DB here
-      // await persistToFirestore(result);
+      // Persist scan result to Firestore
+      try {
+        console.log(`[Firestore] Persisting scan result for ${scan_id}`);
+        
+        // Count findings and artifacts
+        let totalFindings = 0;
+        let totalArtifacts = 0;
+        const moduleStatus: Record<string, any> = {};
+        
+        for (const [moduleName, moduleResult] of Object.entries(result.results)) {
+          const res = moduleResult as any;
+          if (res.findings_count) totalFindings += res.findings_count;
+          if (res.artifacts_count) totalArtifacts += res.artifacts_count;
+          
+          moduleStatus[moduleName] = {
+            status: res.status || 'completed',
+            findings: res.findings_count || 0,
+            artifacts: res.artifacts_count || 0,
+            duration_ms: res.duration_ms || 0
+          };
+        }
+        
+        const scanDoc = {
+          scan_id,
+          domain,
+          status: 'completed',
+          created_at: new Date(),
+          completed_at: new Date(),
+          duration_ms: duration,
+          modules_completed: Object.keys(result.results).length,
+          modules_failed: result.metadata?.modules_failed || 0,
+          findings_count: totalFindings,
+          artifacts_count: totalArtifacts,
+          module_status: moduleStatus,
+          metadata: result.metadata
+        };
+        
+        await firestore.collection('scans').doc(scan_id).set(scanDoc);
+        console.log(`[Firestore] Successfully persisted scan ${scan_id} with ${totalFindings} findings`);
+      } catch (error: any) {
+        console.error('[Firestore] Failed to persist scan result:', {
+          scan_id,
+          error: error.message,
+          code: error.code,
+          details: error.details
+        });
+        // Don't fail the request if persistence fails
+      }
       
       return reply.code(200).send(result);
     } catch (err) {
@@ -229,10 +333,173 @@ export function buildServer() {
         stack: err instanceof Error ? err.stack : undefined
       });
       
+      // Persist failed scan to Firestore
+      try {
+        const failedScanDoc = {
+          scan_id,
+          domain,
+          status: 'failed',
+          created_at: new Date(),
+          failed_at: new Date(),
+          duration_ms: duration,
+          error_message: err instanceof Error ? err.message : String(err),
+          error_stack: err instanceof Error ? err.stack : undefined
+        };
+        
+        await firestore.collection('scans').doc(scan_id).set(failedScanDoc);
+        console.log(`[Firestore] Persisted failed scan ${scan_id}`);
+      } catch (firestoreError: any) {
+        console.error('[Firestore] Failed to persist failed scan:', {
+          scan_id,
+          error: firestoreError.message
+        });
+      }
+      
       // Return 500 to trigger Cloud Tasks retry
       return reply.code(500).send({ 
         error: 'Scan failed', 
         message: err instanceof Error ? err.message : String(err) 
+      });
+    }
+  });
+
+  // --- Report Generation Endpoint ---
+  app.post<{ Body: { scan_id: string } }>('/reports/generate', async (req, reply) => {
+    console.log('🔥 /reports/generate HANDLER REACHED!');
+    const { scan_id } = req.body;
+    
+    if (!scan_id) {
+      console.error('❌ Missing scan_id in report request');
+      return reply.code(400).send({ error: 'scan_id is required' });
+    }
+    
+    const startTime = Date.now();
+    
+    try {
+      console.log(`[Report] Generating report for scan: ${scan_id}`);
+      
+      // 1. Fetch scan document from Firestore
+      console.log('[Report] Fetching scan document from Firestore...');
+      const scanDoc = await firestore.collection('scans').doc(scan_id).get();
+      
+      if (!scanDoc.exists) {
+        console.warn(`[Report] Scan ${scan_id} not found in Firestore`);
+        return reply.code(404).send({ error: 'Scan not found' });
+      }
+      
+      const scanData = scanDoc.data();
+      console.log(`[Report] Found scan: ${scanData?.domain} - ${scanData?.status}`);
+      
+      // 2. Fetch findings for this scan
+      console.log('[Report] Fetching findings from Firestore...');
+      const findingsSnapshot = await firestore.collection('findings')
+        .where('scan_id', '==', scan_id)
+        .orderBy('created_at', 'desc')
+        .get();
+      
+      const findings = findingsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      console.log(`[Report] Found ${findings.length} findings`);
+      
+      // 3. Process data for template
+      const severityCounts = {
+        CRITICAL: 0,
+        HIGH: 0,
+        MEDIUM: 0,
+        LOW: 0,
+        INFO: 0
+      };
+      
+      findings.forEach((finding: any) => {
+        const severity = finding.severity || 'INFO';
+        if (severity in severityCounts) {
+          severityCounts[severity as keyof typeof severityCounts]++;
+        }
+      });
+      
+      const templateData = {
+        scan_id,
+        domain: scanData?.domain || 'unknown',
+        scan_date: scanData?.created_at ? new Date(scanData.created_at.toDate()).toLocaleDateString() : new Date().toLocaleDateString(),
+        report_date: new Date().toLocaleDateString(),
+        duration_seconds: Math.round((scanData?.duration_ms || 0) / 1000),
+        modules_completed: scanData?.modules_completed || 0,
+        total_findings: findings.length,
+        findings: findings.slice(0, 50), // Limit to 50 findings for PDF size
+        severity_counts: severityCounts,
+        has_critical_findings: severityCounts.CRITICAL > 0
+      };
+      
+      console.log('[Report] Template data prepared:', {
+        domain: templateData.domain,
+        total_findings: templateData.total_findings,
+        severity_counts: templateData.severity_counts
+      });
+      
+      // 4. Generate HTML from template
+      console.log('[Report] Loading template and generating HTML...');
+      const template = await loadTemplate();
+      const html = template(templateData);
+      
+      // 5. Generate PDF
+      console.log('[Report] Converting HTML to PDF...');
+      const pdfBuffer = await generatePDF(html);
+      console.log(`[Report] PDF generated: ${pdfBuffer.length} bytes`);
+      
+      // 6. Upload to GCS
+      console.log('[Report] Uploading PDF to GCS...');
+      const bucket = storage.bucket(GCS_BUCKET);
+      const fileName = `reports/${scan_id}/report-${Date.now()}.pdf`;
+      const file = bucket.file(fileName);
+      
+      await file.save(pdfBuffer, {
+        metadata: {
+          contentType: 'application/pdf',
+          metadata: {
+            scanId: scan_id,
+            domain: templateData.domain,
+            generatedAt: new Date().toISOString()
+          }
+        }
+      });
+      
+      console.log(`[Report] PDF uploaded to GCS: ${fileName}`);
+      
+      // 7. Return GCS path for now (signed URLs need additional setup)
+      const reportUrl = `gs://${GCS_BUCKET}/${fileName}`;
+      console.log(`[Report] Report saved to GCS: ${reportUrl}`);
+      
+      const duration = Date.now() - startTime;
+      console.log(`[Report] Report generation completed in ${duration}ms`);
+      
+      return reply.code(200).send({
+        report_url: reportUrl,
+        gcs_path: fileName,
+        scan_id,
+        domain: templateData.domain,
+        total_findings: templateData.total_findings,
+        severity_counts: templateData.severity_counts,
+        generated_at: new Date().toISOString(),
+        generation_time_ms: duration,
+        status: 'Report generated successfully - download via GCS console'
+      });
+      
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      console.error('[Report] Report generation failed:', {
+        scan_id,
+        error: error.message,
+        stack: error.stack,
+        duration_ms: duration
+      });
+      
+      return reply.code(500).send({
+        error: 'Report generation failed',
+        message: error.message,
+        scan_id
       });
     }
   });
